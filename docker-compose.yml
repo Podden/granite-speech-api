@@ -1,0 +1,43 @@
+services:
+  granite-speech-api:
+    build:
+      context: .
+      args:
+        # Override for ROCm: https://download.pytorch.org/whl/rocm6.0
+        # Override for CPU:  https://download.pytorch.org/whl/cpu
+        TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cu121}
+    image: granite-speech-api:latest
+    container_name: granite-speech-api
+    restart: unless-stopped
+    ports:
+      - "${GRANITE_API_PORT:-8000}:8000"
+    environment:
+      GRANITE_API_HOST: 0.0.0.0
+      GRANITE_API_PORT: 8000
+      GRANITE_DEFAULT_MODEL: ${GRANITE_DEFAULT_MODEL:-ibm-granite/granite-speech-4.1-2b}
+      GRANITE_DEVICE: ${GRANITE_DEVICE:-auto}
+      GRANITE_DTYPE: ${GRANITE_DTYPE:-bfloat16}
+      GRANITE_MAX_AUDIO_SECONDS: ${GRANITE_MAX_AUDIO_SECONDS:-600}
+      GRANITE_CORS_ORIGINS: ${GRANITE_CORS_ORIGINS:-*}
+      HF_HOME: /data/hf-cache
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    volumes:
+      - hf-cache:/data/hf-cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/health', timeout=5); sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    # NVIDIA GPU. Comment out for CPU. For ROCm, see compose.rocm.yml below.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  hf-cache:
+    driver: local

@@ -1,0 +1,16 @@
+# docker-compose -f docker-compose.yml -f docker-compose.rocm.yml up
+services:
+  granite-speech-api:
+    build:
+      args:
+        TORCH_INDEX: https://download.pytorch.org/whl/rocm6.0
+    environment:
+      GRANITE_DEVICE: rocm
+      HSA_OVERRIDE_GFX_VERSION: "11.0.0"  # Strix Halo / RDNA3.5; adjust for your GPU
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - render
+    deploy: {}

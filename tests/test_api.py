@@ -71,9 +71,11 @@ def test_parse_word_timestamps() -> None:
 def test_parse_word_timestamps_rollover() -> None:
     from app.backends.granite import _parse_word_timestamps
 
-    # 0.50 -> 11.50 (after rollover)
-    out = _parse_word_timestamps("a [T:50] b [T:150]")
-    assert out[0].words[1].end == pytest.approx(11.5)
+    # Tags wrap modulo 1000 cs (=10s). After "a"@8.50s a "[T:30]" must
+    # decode to 10.30s (added rollover), not 0.30s.
+    out = _parse_word_timestamps("a [T:850] b [T:30]")
+    assert out[0].words[0].end == pytest.approx(8.5)
+    assert out[0].words[1].end == pytest.approx(10.3)
 
 
 def test_parse_speaker_segments() -> None:

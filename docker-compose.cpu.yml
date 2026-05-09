@@ -1,0 +1,10 @@
+# docker-compose -f docker-compose.yml -f docker-compose.cpu.yml up
+services:
+  granite-speech-api:
+    build:
+      args:
+        TORCH_INDEX: https://download.pytorch.org/whl/cpu
+    environment:
+      GRANITE_DEVICE: cpu
+      GRANITE_DTYPE: float32
+    deploy: {}
