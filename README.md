@@ -268,11 +268,10 @@ The base `docker-compose.yml` is GPU-agnostic and mounts a named volume
 runtime overlay:
 
 - `docker-compose.cuda.yml` — NVIDIA Container Toolkit (`--gpus all` style),
-  `GRANITE_DEVICE=cuda`.
-- `docker-compose.rocm.yml` — Linux only. Mounts `/dev/kfd` + `/dev/dri`,
-  joins `video` + `render` groups, sets `HSA_OVERRIDE_GFX_VERSION` (override
-  with `HSA_OVERRIDE_GFX_VERSION=11.5.1 docker compose ... up`).
-- `docker-compose.cpu.yml` — no GPU, `float32` inference.
+  `GRANITE_DEVICE=cuda`. **Untested** — feedback welcome.
+- `docker-compose.rocm.yml` — AMD ROCm via `/dev/dxg` (ROCDXG path, requires
+  Adrenalin 26.2.2+ and Docker inside WSL on Windows). **Untested** — feedback welcome.
+- `docker-compose.cpu.yml` — no GPU, `float32` inference. Verified working.
 
 Override torch wheels at build time:
 
@@ -281,81 +280,10 @@ docker compose -f docker-compose.yml -f docker-compose.cuda.yml \
   build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu128
 ```
 
-### ROCm auf Windows / WSL2
-
-Ab **Adrenalin 26.2.2 + ROCm 7.2.1** nutzt AMD den **ROCDXG**-Pfad (kein
-`/dev/kfd` mehr, kein `amdgpu-install --usecase=wsl`). Das Gerät heißt jetzt
-`/dev/dxg` und kommt direkt vom Windows-Treiber.
-
-**Voraussetzungen auf Windows-Seite (einmalig):**
-
-- Adrenalin-Treiber ≥ 26.2.2 installiert ✓
-- Windows SDK installiert (z.B. über Visual Studio Installer oder direkt von Microsoft) — wird zum Bauen von librocdxg in WSL benötigt. Standardpfad: `C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\`
-
-**Einrichten in WSL Ubuntu 24.04** (im WSL-Terminal ausführen):
-
-```bash
-# --- Schritt 1: ROCm-Repo einrichten und ROCm installieren ---
-sudo apt update && sudo apt install -y wget gnupg2 ca-certificates
-
-# ROCm GPG-Key (für ROCm 7.2 / amdgpu 6.4)
-sudo mkdir -p /etc/apt/keyrings
-wget -q -O - https://repo.radeon.com/rocm/rocm.gpg.key \
-  | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
-
-# ROCm-Paketquelle (noble = Ubuntu 24.04)
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] \
-  https://repo.radeon.com/rocm/apt/6.4.1 noble main" \
-  | sudo tee /etc/apt/sources.list.d/rocm.list
-
-sudo apt update
-sudo apt install -y rocm-dev rocminfo rocm-smi-lib
-
-# --- Schritt 2: User zu render+video Gruppe hinzufügen ---
-sudo usermod -aG render,video $USER
-
-# --- Schritt 3: Build-Abhängigkeiten für librocdxg ---
-sudo apt install -y cmake build-essential git
-
-# --- Schritt 4: librocdxg bauen und installieren ---
-# librocdxg ist die Brücke zwischen ROCm-Runtime und /dev/dxg (Windows DXCore)
-git clone https://github.com/ROCm/librocdxg.git
-cd librocdxg
-
-WIN_SDK="/mnt/c/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0"
-mkdir build && cd build
-cmake .. -DWIN_SDK="${WIN_SDK}/shared"
-make -j$(nproc)
-sudo make install
-cd ~/
-
-# --- Schritt 5: Verifizieren ---
-export HSA_ENABLE_DXG_DETECTION=1
-export PATH="$PATH:/opt/rocm/bin"
-rocminfo | grep -A5 "Agent 2"  # muss deine GPU anzeigen
-
-# Wenn rocminfo die GPU zeigt, in .bashrc/profile dauerhaft setzen:
-echo 'export HSA_ENABLE_DXG_DETECTION=1' >> ~/.bashrc
-echo 'export PATH="$PATH:/opt/rocm/bin"' >> ~/.bashrc
-```
-
-**Docker in WSL** (nicht Docker Desktop — das kann `/dev/dxg` nicht weiterreichen):
-
-```bash
-# Docker direkt in WSL installieren:
-sudo apt install -y docker.io docker-compose-v2
-sudo usermod -aG docker $USER
-# WSL-Session neu starten, dann:
-
-docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d
-```
-
-> **Docker Desktop vs. Docker in WSL:** Docker Desktop unter Windows nutzt eine
-> eigene LinuxKit-VM und kann `/dev/dxg` nicht weiterreichen. Für ROCm-GPU-Zugriff
-> muss Docker *innerhalb* der WSL-Instanz installiert werden.
-
-> **Strix Halo (8060S):** Seit librocdxg v1.2.0 offiziell unterstützt (Ryzen AI Max-Serie).
-> `HSA_OVERRIDE_GFX_VERSION` ist mit dem neuen ROCDXG-Pfad **nicht mehr nötig**.
+> **GPU support status:** GPU inference paths (CUDA and ROCm) are implemented
+> but have not been end-to-end tested. CPU inference works and was verified with
+> all three models. If you get GPU inference working, please open an issue or PR
+> with your setup details.
 
 ---
 
