@@ -1,26 +1,27 @@
-# AMD ROCm overlay (Linux only — ROCm has no Windows support).
-# Usage: docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d
+# AMD ROCm overlay — läuft über ROCDXG + /dev/dxg (Adrenalin 26.2.2+ / ROCm 7.2+).
 #
-# HSA_OVERRIDE_GFX_VERSION: set to your GPU's gfx target.
-#   Strix Halo / RDNA 3.5 -> 11.5.1 (try 11.0.0 if unstable)
-#   RDNA 3 (7900 XTX etc) -> 11.0.0
-#   RDNA 2 (6800/6900)    -> 10.3.0
+# Voraussetzungen (in WSL Ubuntu, NICHT Docker Desktop):
+#   sudo apt install -y docker.io docker-compose-v2
+#   (und librocdxg installiert, HSA_ENABLE_DXG_DETECTION=1 in .bashrc)
+#
+# Starten (im WSL-Terminal):
+#   docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d
 services:
   granite-speech-api:
     build:
       args:
-        TORCH_INDEX: https://download.pytorch.org/whl/rocm6.0
+        TORCH_INDEX: https://download.pytorch.org/whl/rocm6.4
     environment:
       GRANITE_DEVICE: rocm
-      HSA_OVERRIDE_GFX_VERSION: "${HSA_OVERRIDE_GFX_VERSION:-11.0.0}"
+      HSA_ENABLE_DXG_DETECTION: "1"
     devices:
-      - /dev/kfd
-      - /dev/dri
-    group_add:
-      - video
-      - render
-    ipc: host
+      - /dev/dxg
+    volumes:
+      # librocdxg + DXCore libs ins Container weiterreichen
+      - /usr/lib/wsl/lib/libdxcore.so:/usr/lib/libdxcore.so:ro
+      - /opt/rocm/lib/librocdxg.so:/usr/lib/librocdxg.so:ro
     cap_add:
       - SYS_PTRACE
     security_opt:
       - seccomp=unconfined
+    ipc: host

@@ -281,48 +281,81 @@ docker compose -f docker-compose.yml -f docker-compose.cuda.yml \
   build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu128
 ```
 
-### ROCm on Windows / WSL2
+### ROCm auf Windows / WSL2
 
-ROCm in containers requires `/dev/kfd` and `/dev/dri` from the host, and
-**Docker Desktop on Windows does not expose those** — its LinuxKit VM does
-not have an AMD kernel driver. To run on AMD GPUs from Windows you have
-two options:
+Ab **Adrenalin 26.2.2 + ROCm 7.2.1** nutzt AMD den **ROCDXG**-Pfad (kein
+`/dev/kfd` mehr, kein `amdgpu-install --usecase=wsl`). Das Gerät heißt jetzt
+`/dev/dxg` und kommt direkt vom Windows-Treiber.
 
-**Option 1: Native Linux** — install ROCm and Docker on a Linux host, then
-use the `rocm.yml` overlay as documented.
+**Voraussetzungen auf Windows-Seite (einmalig):**
 
-**Option 2: WSL2 + ROCm + native Docker inside WSL** (works on Strix Halo):
+- Adrenalin-Treiber ≥ 26.2.2 installiert ✓
+- Windows SDK installiert (z.B. über Visual Studio Installer oder direkt von Microsoft) — wird zum Bauen von librocdxg in WSL benötigt. Standardpfad: `C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\`
+
+**Einrichten in WSL Ubuntu 24.04** (im WSL-Terminal ausführen):
 
 ```bash
-# 1) Install AMD Adrenalin driver with ROCm-on-WSL support on the Windows side
-#    (https://www.amd.com/en/support — pick your card, install the package
-#    that includes "ROCm on WSL").
-#
-# 2) Inside WSL Ubuntu 24.04:
-sudo apt update && sudo apt install -y wget gpg
-wget https://repo.radeon.com/amdgpu-install/latest/ubuntu/noble/amdgpu-install_*.deb
-sudo apt install -y ./amdgpu-install_*.deb
-sudo amdgpu-install --usecase=wsl,rocm --no-dkms
+# --- Schritt 1: ROCm-Repo einrichten und ROCm installieren ---
+sudo apt update && sudo apt install -y wget gnupg2 ca-certificates
+
+# ROCm GPG-Key (für ROCm 7.2 / amdgpu 6.4)
+sudo mkdir -p /etc/apt/keyrings
+wget -q -O - https://repo.radeon.com/rocm/rocm.gpg.key \
+  | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
+
+# ROCm-Paketquelle (noble = Ubuntu 24.04)
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] \
+  https://repo.radeon.com/rocm/apt/6.4.1 noble main" \
+  | sudo tee /etc/apt/sources.list.d/rocm.list
+
+sudo apt update
+sudo apt install -y rocm-dev rocminfo rocm-smi-lib
+
+# --- Schritt 2: User zu render+video Gruppe hinzufügen ---
 sudo usermod -aG render,video $USER
-# log out / restart WSL: wsl --shutdown
 
-# 3) Verify ROCm works:
-rocminfo | grep gfx     # must list your GPU's gfx target (e.g. gfx1151 for Strix Halo)
-ls /dev/kfd /dev/dri     # both must exist
+# --- Schritt 3: Build-Abhängigkeiten für librocdxg ---
+sudo apt install -y cmake build-essential git
 
-# 4) Use Docker INSIDE WSL (not Docker Desktop):
-sudo apt install -y docker.io docker-compose-v2
-sudo usermod -aG docker $USER
+# --- Schritt 4: librocdxg bauen und installieren ---
+# librocdxg ist die Brücke zwischen ROCm-Runtime und /dev/dxg (Windows DXCore)
+git clone https://github.com/ROCm/librocdxg.git
+cd librocdxg
 
-# 5) Bring up the stack from inside WSL:
-cd granite-speech-api
-HSA_OVERRIDE_GFX_VERSION=11.5.1 \
-  docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d
+WIN_SDK="/mnt/c/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0"
+mkdir build && cd build
+cmake .. -DWIN_SDK="${WIN_SDK}/shared"
+make -j$(nproc)
+sudo make install
+cd ~/
+
+# --- Schritt 5: Verifizieren ---
+export HSA_ENABLE_DXG_DETECTION=1
+export PATH="$PATH:/opt/rocm/bin"
+rocminfo | grep -A5 "Agent 2"  # muss deine GPU anzeigen
+
+# Wenn rocminfo die GPU zeigt, in .bashrc/profile dauerhaft setzen:
+echo 'export HSA_ENABLE_DXG_DETECTION=1' >> ~/.bashrc
+echo 'export PATH="$PATH:/opt/rocm/bin"' >> ~/.bashrc
 ```
 
-Common `HSA_OVERRIDE_GFX_VERSION` values: `11.5.1` for Strix Halo / RDNA3.5,
-`11.0.0` for RDNA3 (7900 XTX), `10.3.0` for RDNA2 (6800/6900). If `rocminfo`
-already lists your GPU correctly, you can usually leave the override unset.
+**Docker in WSL** (nicht Docker Desktop — das kann `/dev/dxg` nicht weiterreichen):
+
+```bash
+# Docker direkt in WSL installieren:
+sudo apt install -y docker.io docker-compose-v2
+sudo usermod -aG docker $USER
+# WSL-Session neu starten, dann:
+
+docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d
+```
+
+> **Docker Desktop vs. Docker in WSL:** Docker Desktop unter Windows nutzt eine
+> eigene LinuxKit-VM und kann `/dev/dxg` nicht weiterreichen. Für ROCm-GPU-Zugriff
+> muss Docker *innerhalb* der WSL-Instanz installiert werden.
+
+> **Strix Halo (8060S):** Seit librocdxg v1.2.0 offiziell unterstützt (Ryzen AI Max-Serie).
+> `HSA_OVERRIDE_GFX_VERSION` ist mit dem neuen ROCDXG-Pfad **nicht mehr nötig**.
 
 ---
 
