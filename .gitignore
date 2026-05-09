@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Env
+.env
+.env.local
+
+# Build
+dist/
+build/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+
+# Data / models
+hf-cache/
+models/
+*.wav
+*.mp3
+*.m4a
+*.ogg
+!tests/fixtures/*.wav
+
+# OS
+.DS_Store
+Thumbs.db

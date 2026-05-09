@@ -1,0 +1,47 @@
+[project]
+name = "granite-speech-api"
+version = "0.1.0"
+description = "OpenAI-compatible Audio Transcription API powered by IBM Granite Speech 4.1"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Daniel" }]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.4",
+    "soundfile>=0.12",
+    "numpy>=1.26",
+    "torch>=2.7",
+    "torchaudio>=2.7",
+    "transformers>=4.52.1",
+    "accelerate>=0.30",
+    "huggingface-hub>=0.24",
+    "peft>=0.11",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "httpx>=0.27", "ruff>=0.6"]
+# torch flavors — pick one. See README for install commands.
+# These groups are placeholders; users install torch via the matching index URL.
+rocm = []
+cpu = []
+
+[project.scripts]
+granite-speech-api = "app.main:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

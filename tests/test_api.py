@@ -1,0 +1,107 @@
+"""Smoke tests — do not require the actual Granite model weights."""
+
+from __future__ import annotations
+
+import io
+import wave
+
+import numpy as np
+import pytest
+from fastapi.testclient import TestClient
+
+
+def _silence_wav(seconds: float = 1.0, sr: int = 16000) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        n = int(seconds * sr)
+        w.writeframes(np.zeros(n, dtype=np.int16).tobytes())
+    return buf.getvalue()
+
+
+@pytest.fixture
+def client() -> TestClient:
+    from app.main import app
+
+    return TestClient(app)
+
+
+def test_health(client: TestClient) -> None:
+    r = client.get("/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert "ibm-granite/granite-speech-4.1-2b" in body["available_models"]
+
+
+def test_models_list(client: TestClient) -> None:
+    r = client.get("/v1/models")
+    assert r.status_code == 200
+    ids = [m["id"] for m in r.json()["data"]]
+    assert "ibm-granite/granite-speech-4.1-2b" in ids
+    assert "ibm-granite/granite-speech-4.1-2b-plus" in ids
+
+
+def test_normalize_model_id_auto_upgrade() -> None:
+    from app.backends.granite import GRANITE_BASE, GRANITE_PLUS, normalize_model_id
+
+    assert normalize_model_id(None, want_plus_features=False) == GRANITE_BASE
+    assert normalize_model_id(None, want_plus_features=True) == GRANITE_PLUS
+    assert normalize_model_id("granite-speech-4.1-2b", want_plus_features=True) == GRANITE_PLUS
+    assert (
+        normalize_model_id("ibm-granite/granite-speech-4.1-2b-plus", want_plus_features=False)
+        == GRANITE_PLUS
+    )
+
+
+def test_parse_word_timestamps() -> None:
+    from app.backends.granite import _parse_word_timestamps
+
+    out = _parse_word_timestamps("hello [T:45] world [T:82]")
+    assert len(out) == 1
+    seg = out[0]
+    assert seg.words is not None and len(seg.words) == 2
+    assert seg.words[0].word == "hello"
+    assert seg.words[0].end == pytest.approx(0.45)
+    assert seg.words[1].end == pytest.approx(0.82)
+
+
+def test_parse_word_timestamps_rollover() -> None:
+    from app.backends.granite import _parse_word_timestamps
+
+    # 0.50 -> 11.50 (after rollover)
+    out = _parse_word_timestamps("a [T:50] b [T:150]")
+    assert out[0].words[1].end == pytest.approx(11.5)
+
+
+def test_parse_speaker_segments() -> None:
+    from app.backends.granite import _parse_speaker_segments
+
+    txt = "[Speaker 1]: hello there [Speaker 2]: hi back"
+    segs = _parse_speaker_segments(txt, duration=2.0)
+    assert len(segs) == 2
+    assert segs[0].speaker == "SPEAKER_00"
+    assert segs[1].speaker == "SPEAKER_01"
+
+
+def test_merge_words_and_speakers() -> None:
+    from app.backends.granite import _merge_words_and_speakers
+
+    ts = "hello [T:50] world [T:100] hi [T:150]"
+    spk = "[Speaker 1]: hello world [Speaker 2]: hi"
+    segs = _merge_words_and_speakers(ts, spk)
+    # Expect 2 contiguous speaker segments.
+    speakers = [s.speaker for s in segs]
+    assert speakers == ["SPEAKER_00", "SPEAKER_01"]
+    assert segs[0].words[0].word == "hello"
+    assert segs[1].words[0].word == "hi"
+
+
+def test_transcriptions_rejects_empty(client: TestClient) -> None:
+    r = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("empty.wav", b"", "audio/wav")},
+    )
+    assert r.status_code == 400
