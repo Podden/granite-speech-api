@@ -1,0 +1,16 @@
+# NVIDIA GPU overlay.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d
+services:
+  granite-speech-api:
+    build:
+      args:
+        TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cu121}
+    environment:
+      GRANITE_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

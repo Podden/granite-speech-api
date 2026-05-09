@@ -1,4 +1,10 @@
-# docker-compose -f docker-compose.yml -f docker-compose.rocm.yml up
+# AMD ROCm overlay (Linux only — ROCm has no Windows support).
+# Usage: docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d
+#
+# HSA_OVERRIDE_GFX_VERSION: set to your GPU's gfx target.
+#   Strix Halo / RDNA 3.5 -> 11.5.1 (try 11.0.0 if unstable)
+#   RDNA 3 (7900 XTX etc) -> 11.0.0
+#   RDNA 2 (6800/6900)    -> 10.3.0
 services:
   granite-speech-api:
     build:
@@ -6,11 +12,15 @@ services:
         TORCH_INDEX: https://download.pytorch.org/whl/rocm6.0
     environment:
       GRANITE_DEVICE: rocm
-      HSA_OVERRIDE_GFX_VERSION: "11.0.0"  # Strix Halo / RDNA3.5; adjust for your GPU
+      HSA_OVERRIDE_GFX_VERSION: "${HSA_OVERRIDE_GFX_VERSION:-11.0.0}"
     devices:
       - /dev/kfd
       - /dev/dri
     group_add:
       - video
       - render
-    deploy: {}
+    ipc: host
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined

@@ -1,4 +1,5 @@
-# docker-compose -f docker-compose.yml -f docker-compose.cpu.yml up
+# CPU-only overlay (no GPU runtime, float32 inference).
+# Usage: docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
 services:
   granite-speech-api:
     build:
@@ -7,4 +8,3 @@ services:
     environment:
       GRANITE_DEVICE: cpu
       GRANITE_DTYPE: float32
-    deploy: {}

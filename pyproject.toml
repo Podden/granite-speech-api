@@ -20,6 +20,7 @@ dependencies = [
     "accelerate>=0.30",
     "huggingface-hub>=0.24",
     "peft>=0.11",
+    "audioread>=3.0",
 ]
 
 [project.optional-dependencies]

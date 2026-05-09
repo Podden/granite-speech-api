@@ -1,72 +1,157 @@
 # granite-speech-api
 
-OpenAI-compatible HTTP audio transcription API powered by **IBM Granite Speech 4.1**.
+OpenAI-compatible HTTP audio-transcription API powered by **IBM Granite Speech 4.1**.
 
-Designed as a drop-in replacement for the OpenAI `/v1/audio/transcriptions`
-endpoint with extras for **speaker attribution** and **word-level timestamps**
-(WhisperX-style), backed natively by `granite-speech-4.1-2b-plus`.
+Drop-in replacement for OpenAI's `POST /v1/audio/transcriptions` plus extras for
+**speaker attribution** and **word-level timestamps** (WhisperX-style),
+served natively by `granite-speech-4.1-2b-plus`.
 
-## Models
+---
 
-| Model | Use for |
-| --- | --- |
-| `ibm-granite/granite-speech-4.1-2b` (default) | ASR + AST, 6 languages + Japanese, keyword biasing, punctuation + capitalization |
-| `ibm-granite/granite-speech-4.1-2b-plus` | Speaker-attributed ASR + word-level timestamps |
-| `ibm-granite/granite-speech-4.1-2b-nar` | Higher throughput, non-autoregressive |
+## Features
 
-The server **auto-upgrades** to `…-plus` when a request asks for
-`speaker_attribution=true` or `timestamp_granularities[]=word`.
+- **OpenAI-compatible** `POST /v1/audio/transcriptions` (multipart-form, all standard fields).
+- **Three Granite Speech 4.1 backends** behind one HTTP surface:
+  - `granite-speech-4.1-2b` — default, autoregressive, supports AST + Japanese
+  - `granite-speech-4.1-2b-plus` — adds speaker labels + per-word timestamps
+  - `granite-speech-4.1-2b-nar` — non-autoregressive, fastest throughput
+- **Auto-upgrade**: requests asking for `speaker_attribution` or
+  `timestamp_granularities[]=word` automatically swap to the `-plus` model.
+- **Auto-download** of model weights on first request (cached to a Docker volume).
+- **Hot-swap loader** keeps a single model in VRAM at a time; switching `model`
+  in a request swaps cleanly.
+- **Response formats**: `json`, `text`, `srt`, `vtt`, `verbose_json`.
+- **NDJSON streaming** (`stream=true`) for clients like Vibe / sona.
+- **WhisperX-compat fields** (`diarize`, `hf_token`, `batch_size`, `compute_type`)
+  silently accepted so existing pipelines keep working.
+- **Robust audio loader**: `libsndfile` first, `audioread` + `ffmpeg` fallback for
+  m4a/aac and other containers.
+- **Docker Compose** out of the box for CUDA, ROCm and CPU.
 
-Only one model is held in VRAM at a time (hot-swap on `model` change).
+---
 
-## Install
+## Quickstart
+
+### Option A — Docker Compose (recommended)
 
 ```bash
-# Create env (Python ≥ 3.11)
-uv venv && source .venv/bin/activate   # or python -m venv
+git clone https://github.com/Podden/granite-speech-api.git
+cd granite-speech-api
 
-# CUDA 12.1 (default)
-uv pip install -e .
-uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Pick one:
+docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d   # NVIDIA
+docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d   # AMD (Linux)
+docker compose -f docker-compose.yml -f docker-compose.cpu.yml  up -d   # CPU only
 
-# ROCm 6.0 (AMD, e.g. Strix Halo)
-uv pip install -e .
-uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/rocm6.0
-
-# CPU
-uv pip install -e .
-uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+# Sanity check
+curl http://localhost:8000/health
 ```
 
-## Run
+The first transcription request triggers the HuggingFace download
+(~5 GB per model) into the named volume `hf-cache`; subsequent restarts reuse it.
+
+### Option B — Local install
+
+Requires Python ≥ 3.11 and `ffmpeg` on `PATH` (for non-PCM audio formats).
 
 ```bash
+git clone https://github.com/Podden/granite-speech-api.git
+cd granite-speech-api
+
+uv venv --python 3.12
+uv pip install -e .
+
+# Pick the matching torch wheel for your hardware:
+uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121   # CUDA
+uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/rocm6.0 # ROCm
+uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu     # CPU
+
 cp .env.example .env
-granite-speech-api    # or:  uvicorn app.main:app --host 0.0.0.0 --port 8000
+granite-speech-api    # or: uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
+
+---
+
+## Models & feature matrix
+
+| Feature                       | `2b` (default) | `2b-plus`       | `2b-nar`     |
+| ----------------------------- | :------------: | :-------------: | :----------: |
+| Plain ASR                     | ✅             | ✅              | ✅           |
+| Punctuation + Capitalization  | ✅             | ❌              | ✅           |
+| Word-level timestamps         | ❌             | ✅ via `[T:N]`  | ❌           |
+| Speaker attribution (SAA)     | ❌             | ✅ `[Speaker N]:`| ❌           |
+| Keyword biasing               | ✅             | ✅              | ✅           |
+| Speech translation (AST)      | ✅ 7 langs     | ❌              | ❌           |
+| Japanese ASR                  | ✅             | ❌              | ❌           |
+| Throughput                    | medium         | medium          | **fastest**  |
+
+**Supported languages** (ASR): English, French, German, Spanish, Portuguese
+(Japanese also supported by `2b`).
+
+> **NAR notes:** the NAR backend is implemented but only smoke-tested. It uses
+> a different transformers API (`AutoModel` + `AutoFeatureExtractor`,
+> `trust_remote_code=True`) and prefers `flash_attention_2` on CUDA — install
+> `flash-attn` for best throughput, otherwise it falls back to PyTorch SDPA.
+> NAR does not produce punctuation, AST, timestamps or speaker labels.
+
+---
 
 ## API
 
 ### `POST /v1/audio/transcriptions`
 
-Multipart-form, OpenAI-compatible.
+Multipart form. Everything except `file` is optional.
 
-| Field | Type | Notes |
-| --- | --- | --- |
-| `file` | file | Audio (mp3, wav, ogg, m4a, flac, …) |
-| `model` | string | Granite model id (auto-upgrades to `-plus` for rich features) |
-| `language` | string | ISO 639-1 hint (optional) |
-| `response_format` | string | `json` (default) \| `text` \| `srt` \| `vtt` \| `verbose_json` |
-| `timestamp_granularities[]` | string | `segment` \| `word` (forces `-plus`) |
-| `prompt` | string | Keyword-biasing list |
-| `translate` | bool | Translate to `translate_to` (AST mode, 2b only) |
-| `translate_to` | string | `english`/`french`/`german`/`spanish`/`portuguese`/`japanese`/`italian`/`mandarin` |
-| `speaker_attribution` | bool | Forces `-plus`. Returns `[Speaker N]:` segments |
-| `min_speakers` / `max_speakers` | int | Reserved for compat (currently advisory) |
-| `stream` | bool | Emit ndjson event stream |
-| `diarize` / `hf_token` / `batch_size` / `compute_type` | — | WhisperX-compat aliases (silently accepted) |
+| Field                          | Type     | Notes                                                                                              |
+| ------------------------------ | -------- | -------------------------------------------------------------------------------------------------- |
+| `file`                         | file     | Audio (mp3, wav, ogg, m4a, flac, …)                                                                |
+| `model`                        | string   | Granite model id; auto-upgrades to `-plus` for rich features                                       |
+| `language`                     | string   | ISO-639-1 hint, echoed back in `verbose_json` (Granite does not detect language itself)            |
+| `response_format`              | string   | `json` (default), `text`, `srt`, `vtt`, `verbose_json`                                             |
+| `timestamp_granularities[]`    | string   | `segment` (default), `word` (forces `-plus`)                                                       |
+| `prompt`                       | string   | Comma-separated keywords for biased ASR                                                            |
+| `translate`, `translate_to`    | bool/str | AST (`-2b` only): `english`/`french`/`german`/`spanish`/`portuguese`/`japanese`/`italian`/`mandarin` |
+| `speaker_attribution`          | bool     | Forces `-plus`, adds `[Speaker N]:` to segments                                                    |
+| `min_speakers`/`max_speakers`  | int      | Reserved (advisory)                                                                                |
+| `stream`                       | bool     | Emit NDJSON event stream                                                                           |
+| `diarize`/`hf_token`/`batch_size`/`compute_type` | — | WhisperX aliases, accepted for drop-in compatibility                                       |
 
-### `verbose_json`
+#### Examples
+
+```bash
+# Plain transcription
+curl -s http://localhost:8000/v1/audio/transcriptions \
+  -F file=@meeting.wav
+
+# Verbose JSON with word-level timestamps + speaker labels (auto-loads -plus)
+curl -s http://localhost:8000/v1/audio/transcriptions \
+  -F file=@meeting.wav \
+  -F response_format=verbose_json \
+  -F speaker_attribution=true \
+  -F 'timestamp_granularities[]=word'
+
+# SRT subtitles
+curl -s http://localhost:8000/v1/audio/transcriptions \
+  -F file=@lecture.mp3 \
+  -F response_format=srt
+
+# Speech translation to English
+curl -s http://localhost:8000/v1/audio/transcriptions \
+  -F file=@german.wav \
+  -F translate=true -F translate_to=english
+
+# Keyword biasing
+curl -s http://localhost:8000/v1/audio/transcriptions \
+  -F file=@call.wav \
+  -F 'prompt=Kubernetes, GitOps, ArgoCD'
+
+# NDJSON streaming
+curl -s --no-buffer http://localhost:8000/v1/audio/transcriptions \
+  -F file=@audio.wav \
+  -F stream=true
+```
+
+#### `verbose_json` shape
 
 ```json
 {
@@ -76,8 +161,7 @@ Multipart-form, OpenAI-compatible.
   "text": "[SPEAKER_00] Hello world. [SPEAKER_01] How are you?",
   "segments": [
     {
-      "id": 0,
-      "start": 0.0, "end": 1.5,
+      "id": 0, "start": 0.0, "end": 1.5,
       "speaker": "SPEAKER_00",
       "text": "Hello world.",
       "words": [
@@ -89,61 +173,162 @@ Multipart-form, OpenAI-compatible.
 }
 ```
 
-### ndjson stream (`stream=true`)
+#### NDJSON stream events
 
 ```jsonl
 {"type":"duration","duration":42.3}
 {"type":"progress","progress":0}
-{"type":"segment","start":0.0,"end":1.5,"text":"Hello world.","speaker":"SPEAKER_00"}
+{"type":"segment","start":0.0,"end":1.5,"text":"Hello","speaker":"SPEAKER_00"}
 {"type":"result","text":"Hello world. How are you?","language":"en"}
 {"type":"progress","progress":100}
 ```
 
+> Streaming is currently a wrapper around the synchronous `transcribe()` —
+> Granite's `generate()` is non-streaming. Token-level streaming via
+> `TextIteratorStreamer` is on the backlog.
+
 ### `GET /v1/models`
 
-Lists the three Granite Speech 4.1 model ids.
+Lists the three available Granite Speech 4.1 model ids.
 
 ### `POST /v1/models/load` / `POST /v1/models/unload`
 
-Manual hot-swap control.
+Manual hot-swap control:
 
 ```bash
 curl -X POST http://localhost:8000/v1/models/load \
-  -H "Content-Type: application/json" \
-  -d '{"path":"ibm-granite/granite-speech-4.1-2b-plus"}'
+  -H 'Content-Type: application/json' \
+  -d '{"path": "ibm-granite/granite-speech-4.1-2b-plus"}'
 ```
 
 ### `GET /health`
 
-Reports loaded model and device.
+Reports loaded model and device:
 
-## Docker
-
-```bash
-# CUDA
-docker build -t granite-speech-api .
-
-# ROCm
-docker build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/rocm6.0 \
-             -t granite-speech-api:rocm .
-
-# CPU
-docker build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cpu \
-             -t granite-speech-api:cpu .
+```json
+{
+  "status": "ok",
+  "loaded_model": "ibm-granite/granite-speech-4.1-2b",
+  "device": "cuda",
+  "default_model": "ibm-granite/granite-speech-4.1-2b",
+  "available_models": [
+    "ibm-granite/granite-speech-4.1-2b",
+    "ibm-granite/granite-speech-4.1-2b-plus",
+    "ibm-granite/granite-speech-4.1-2b-nar"
+  ]
+}
 ```
 
-## Compatibility matrix
+---
 
-| Feature | 2b | 2b-plus | 2b-nar |
-| --- | --- | --- | --- |
-| ASR (plain) | ✅ | ✅ | ✅ |
-| Punctuation + Capitalization | ✅ | ❌ | ✅ |
-| Word-level timestamps | ❌ | ✅ via `[T:N]` | ❌ |
-| Speaker attribution | ❌ | ✅ via `[Speaker N]:` | ❌ |
-| Keyword biasing | ✅ | ✅ | ✅ |
-| Speech translation (AST) | ✅ 7 langs | ❌ | ✅ |
-| Japanese ASR | ✅ | ❌ | ✅ |
+## Configuration
+
+All settings via env vars (or `.env` file). See [.env.example](.env.example).
+
+| Env var                      | Default                                  | Notes                                            |
+| ---------------------------- | ---------------------------------------- | ------------------------------------------------ |
+| `GRANITE_API_HOST`           | `0.0.0.0`                                |                                                  |
+| `GRANITE_API_PORT`           | `8000`                                   |                                                  |
+| `GRANITE_DEFAULT_MODEL`      | `ibm-granite/granite-speech-4.1-2b`      | Model loaded when none specified                 |
+| `GRANITE_DEVICE`             | `auto`                                   | `auto` / `cuda` / `cuda:0` / `rocm` / `cpu`      |
+| `GRANITE_DTYPE`              | `bfloat16`                               | `bfloat16` / `float16` / `float32`               |
+| `GRANITE_MAX_AUDIO_SECONDS`  | `600`                                    | Reject longer audio with HTTP 413                |
+| `GRANITE_CORS_ORIGINS`       | `*`                                      | Comma-separated, or `*`                          |
+| `HF_HOME`                    | `/data/hf-cache` (in container)          | Where weights are cached                         |
+| `HUGGING_FACE_HUB_TOKEN`     | —                                        | For private/gated models                         |
+
+---
+
+## Docker Compose details
+
+The base `docker-compose.yml` is GPU-agnostic and mounts a named volume
+`hf-cache` so model weights persist across restarts. Combine it with one
+runtime overlay:
+
+- `docker-compose.cuda.yml` — NVIDIA Container Toolkit (`--gpus all` style),
+  `GRANITE_DEVICE=cuda`.
+- `docker-compose.rocm.yml` — Linux only. Mounts `/dev/kfd` + `/dev/dri`,
+  joins `video` + `render` groups, sets `HSA_OVERRIDE_GFX_VERSION` (override
+  with `HSA_OVERRIDE_GFX_VERSION=11.5.1 docker compose ... up`).
+- `docker-compose.cpu.yml` — no GPU, `float32` inference.
+
+Override torch wheels at build time:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.cuda.yml \
+  build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu128
+```
+
+---
+
+## Repository layout
+
+```
+granite-speech-api/
+├── app/
+│   ├── main.py                 # FastAPI app, lifespan, CORS, run()
+│   ├── config.py               # pydantic-settings (GRANITE_* env)
+│   ├── audio.py                # libsndfile + audioread/ffmpeg → mono 16 kHz
+│   ├── api/
+│   │   ├── transcriptions.py   # POST /v1/audio/transcriptions
+│   │   ├── models.py           # GET /v1/models, POST /v1/models/{load,unload}
+│   │   └── health.py           # GET /health
+│   ├── backends/
+│   │   ├── base.py             # ASRBackend ABC + transcribe_stream() default
+│   │   ├── granite.py          # AR backend (2b, 2b-plus) + output parsers
+│   │   ├── granite_nar.py      # NAR backend (2b-nar)
+│   │   └── registry.py         # Hot-swap registry (1 model active)
+│   └── schema/
+│       ├── request.py          # TranscriptionRequest dataclass
+│       └── response.py         # OpenAI verbose_json models
+├── tests/
+│   └── test_api.py             # Smoke + parser tests (no HF download)
+├── Dockerfile
+├── docker-compose.yml          # GPU-agnostic base
+├── docker-compose.cuda.yml     # NVIDIA overlay
+├── docker-compose.rocm.yml     # AMD ROCm overlay (Linux only)
+├── docker-compose.cpu.yml      # CPU-only overlay
+├── pyproject.toml
+├── .env.example
+├── implementation-plan.md
+└── README.md
+```
+
+---
+
+## Development
+
+```bash
+uv pip install -e ".[dev]"
+pytest -q
+ruff check .
+```
+
+Smoke tests cover the request shape, OpenAI-compatibility model normalization,
+and the timestamp / speaker output parsers — they do **not** download any
+HF weights, so they run fast on plain CI.
+
+---
+
+## Backlog
+
+- [ ] Chunking for audio > 9 min ASR/SAA, > 5 min timestamps, with
+  `prefix_text`-based incremental decoding.
+- [ ] Real token-level streaming via `TextIteratorStreamer`.
+- [ ] Bearer-token auth (env `API_KEY`) for direct-internet exposure.
+- [ ] vLLM-backed alternative path for high-throughput production deployments.
+- [ ] Time-aligned speaker segments in SAA-only mode (currently linearly
+  distributed over the audio duration when no word-timestamps are requested).
+- [ ] `flash-attn` install layer in a `Dockerfile.cuda-flash` variant for NAR.
+
+---
 
 ## License
 
-Apache-2.0
+Apache-2.0 — see model cards on Hugging Face for the underlying weights.
+
+## Credits
+
+- [IBM Granite Speech 4.1](https://huggingface.co/ibm-granite/granite-speech-4.1-2b) — the model family powering this API.
+- [HuggingFace Transformers](https://github.com/huggingface/transformers).
+- [FastAPI](https://fastapi.tiangolo.com/).
