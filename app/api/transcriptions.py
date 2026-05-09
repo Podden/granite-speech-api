@@ -116,6 +116,7 @@ async def transcribe(
         )
 
     segments, detected_lang = await backend.transcribe(req)
+    registry.touch()
     text = _join_segments(segments).strip()
 
     fmt = response_format.lower()
@@ -198,3 +199,4 @@ async def _ndjson_stream(backend, req: TranscriptionRequest, duration: float):
     yield json.dumps({"type": "duration", "duration": duration}) + "\n"
     async for event in backend.transcribe_stream(req):
         yield json.dumps(event) + "\n"
+    registry.touch()

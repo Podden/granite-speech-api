@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     max_audio_seconds: int = 600
     cors_origins: str = "*"
 
+    # Auto-unload the loaded model after this many seconds of inactivity to free
+    # VRAM/RAM. Set to -1 (or 0) to disable. The check runs on a background
+    # task; precision is roughly `idle_check_interval`.
+    idle_unload_seconds: int = 600
+    idle_check_interval: int = 30
+
     def resolved_device(self) -> str:
         if self.device == "auto":
             try:

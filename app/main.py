@@ -19,8 +19,8 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ARG001
     # Lazy-load on first request — keeps cold start fast and avoids OOM
-    # when no transcription is ever requested. Toggle via env if you want
-    # eager loading.
+    # when no transcription is ever requested.
+    registry.start_idle_monitor()
     yield
     await registry.shutdown()
 

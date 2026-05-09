@@ -52,7 +52,18 @@ The first transcription request triggers the HuggingFace download
 
 ### Option B — Local install
 
-Requires Python ≥ 3.11 and `ffmpeg` on `PATH` (for non-PCM audio formats).
+Requires Python ≥ 3.11 and **`ffmpeg` on `PATH`** for non-PCM audio formats
+(m4a/AAC, some MP3 edge-cases). Without ffmpeg you can still transcribe wav,
+flac, ogg/opus and most mp3 — but uploads of `.m4a` from iPhones / browsers
+will fail.
+
+- Linux: `apt install ffmpeg` / `dnf install ffmpeg` / `pacman -S ffmpeg`
+- macOS: `brew install ffmpeg`
+- Windows: `winget install Gyan.FFmpeg` (or `choco install ffmpeg`),
+  then re-open your shell so `PATH` is refreshed.
+
+The Docker images already bundle ffmpeg — use Docker if you don't want to
+deal with this.
 
 ```bash
 git clone https://github.com/Podden/granite-speech-api.git
@@ -209,6 +220,8 @@ Reports loaded model and device:
 {
   "status": "ok",
   "loaded_model": "ibm-granite/granite-speech-4.1-2b",
+  "idle_seconds": 12.4,
+  "idle_unload_seconds": 600,
   "device": "cuda",
   "default_model": "ibm-granite/granite-speech-4.1-2b",
   "available_models": [
@@ -225,6 +238,13 @@ Reports loaded model and device:
 
 All settings via env vars (or `.env` file). See [.env.example](.env.example).
 
+### Auto-unload
+
+The API auto-unloads the model after `GRANITE_IDLE_UNLOAD_SECONDS` of inactivity
+(default: 600s = 10 min). The next request triggers a fresh load — weights are
+still cached on disk in `HF_HOME`, so reload is fast (no re-download). To keep
+the model resident forever, set `GRANITE_IDLE_UNLOAD_SECONDS=-1`.
+
 | Env var                      | Default                                  | Notes                                            |
 | ---------------------------- | ---------------------------------------- | ------------------------------------------------ |
 | `GRANITE_API_HOST`           | `0.0.0.0`                                |                                                  |
@@ -233,6 +253,8 @@ All settings via env vars (or `.env` file). See [.env.example](.env.example).
 | `GRANITE_DEVICE`             | `auto`                                   | `auto` / `cuda` / `cuda:0` / `rocm` / `cpu`      |
 | `GRANITE_DTYPE`              | `bfloat16`                               | `bfloat16` / `float16` / `float32`               |
 | `GRANITE_MAX_AUDIO_SECONDS`  | `600`                                    | Reject longer audio with HTTP 413                |
+| `GRANITE_IDLE_UNLOAD_SECONDS`| `600`                                    | Auto-unload model after N seconds idle. `-1` disables. |
+| `GRANITE_IDLE_CHECK_INTERVAL`| `30`                                     | How often the idle monitor wakes up (seconds)    |
 | `GRANITE_CORS_ORIGINS`       | `*`                                      | Comma-separated, or `*`                          |
 | `HF_HOME`                    | `/data/hf-cache` (in container)          | Where weights are cached                         |
 | `HUGGING_FACE_HUB_TOKEN`     | —                                        | For private/gated models                         |
@@ -258,6 +280,49 @@ Override torch wheels at build time:
 docker compose -f docker-compose.yml -f docker-compose.cuda.yml \
   build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu128
 ```
+
+### ROCm on Windows / WSL2
+
+ROCm in containers requires `/dev/kfd` and `/dev/dri` from the host, and
+**Docker Desktop on Windows does not expose those** — its LinuxKit VM does
+not have an AMD kernel driver. To run on AMD GPUs from Windows you have
+two options:
+
+**Option 1: Native Linux** — install ROCm and Docker on a Linux host, then
+use the `rocm.yml` overlay as documented.
+
+**Option 2: WSL2 + ROCm + native Docker inside WSL** (works on Strix Halo):
+
+```bash
+# 1) Install AMD Adrenalin driver with ROCm-on-WSL support on the Windows side
+#    (https://www.amd.com/en/support — pick your card, install the package
+#    that includes "ROCm on WSL").
+#
+# 2) Inside WSL Ubuntu 24.04:
+sudo apt update && sudo apt install -y wget gpg
+wget https://repo.radeon.com/amdgpu-install/latest/ubuntu/noble/amdgpu-install_*.deb
+sudo apt install -y ./amdgpu-install_*.deb
+sudo amdgpu-install --usecase=wsl,rocm --no-dkms
+sudo usermod -aG render,video $USER
+# log out / restart WSL: wsl --shutdown
+
+# 3) Verify ROCm works:
+rocminfo | grep gfx     # must list your GPU's gfx target (e.g. gfx1151 for Strix Halo)
+ls /dev/kfd /dev/dri     # both must exist
+
+# 4) Use Docker INSIDE WSL (not Docker Desktop):
+sudo apt install -y docker.io docker-compose-v2
+sudo usermod -aG docker $USER
+
+# 5) Bring up the stack from inside WSL:
+cd granite-speech-api
+HSA_OVERRIDE_GFX_VERSION=11.5.1 \
+  docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d
+```
+
+Common `HSA_OVERRIDE_GFX_VERSION` values: `11.5.1` for Strix Halo / RDNA3.5,
+`11.0.0` for RDNA3 (7900 XTX), `10.3.0` for RDNA2 (6800/6900). If `rocminfo`
+already lists your GPU correctly, you can usually leave the override unset.
 
 ---
 

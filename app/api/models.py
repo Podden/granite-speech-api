@@ -35,5 +35,5 @@ async def load_model(req: LoadRequest) -> dict:
 
 @router.post("/v1/models/unload")
 async def unload_model() -> dict:
-    await registry.shutdown()
-    return {"loaded_model": None}
+    prev = await registry.unload()
+    return {"unloaded_model": prev, "loaded_model": None}

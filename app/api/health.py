@@ -11,10 +11,12 @@ router = APIRouter()
 
 @router.get("/health")
 async def health() -> dict:
-    backend = registry._backend  # internal access fine here
+    idle = registry.idle_seconds
     return {
         "status": "ok",
-        "loaded_model": backend.model_id if backend else None,
+        "loaded_model": registry.loaded_model,
+        "idle_seconds": None if idle is None else round(idle, 1),
+        "idle_unload_seconds": settings.idle_unload_seconds,
         "device": settings.resolved_device(),
         "default_model": settings.default_model,
         "available_models": [GRANITE_BASE, GRANITE_PLUS, GRANITE_NAR],
