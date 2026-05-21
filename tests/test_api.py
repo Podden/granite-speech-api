@@ -48,7 +48,10 @@ def test_normalize_model_id_auto_upgrade() -> None:
     from app.backends.granite import GRANITE_BASE, GRANITE_PLUS, normalize_model_id
 
     assert normalize_model_id(None, want_plus_features=False) == GRANITE_BASE
+    assert normalize_model_id("whisper-1", want_plus_features=False) == GRANITE_BASE
+    assert normalize_model_id("gpt-4o-transcribe", want_plus_features=False) == GRANITE_BASE
     assert normalize_model_id(None, want_plus_features=True) == GRANITE_PLUS
+    assert normalize_model_id("whisper-1", want_plus_features=True) == GRANITE_PLUS
     assert normalize_model_id("granite-speech-4.1-2b", want_plus_features=True) == GRANITE_PLUS
     assert (
         normalize_model_id("ibm-granite/granite-speech-4.1-2b-plus", want_plus_features=False)

@@ -20,6 +20,12 @@ GRANITE_NAR = "ibm-granite/granite-speech-4.1-2b-nar"
 
 GRANITE_MODELS = {GRANITE_BASE, GRANITE_PLUS, GRANITE_NAR}
 
+OPENAI_TRANSCRIPTION_MODEL_ALIASES = {
+    "whisper-1": GRANITE_BASE,
+    "gpt-4o-transcribe": GRANITE_BASE,
+    "gpt-4o-mini-transcribe": GRANITE_BASE,
+}
+
 # Languages the AST mode of the base/2b model supports.
 AST_LANGUAGES = {
     "english": "English",
@@ -62,6 +68,10 @@ def normalize_model_id(model: str | None, *, want_plus_features: bool) -> str:
     """
     if not model:
         model = GRANITE_BASE
+    else:
+        model = model.strip()
+
+    model = OPENAI_TRANSCRIPTION_MODEL_ALIASES.get(model.lower(), model)
 
     # Allow shorthand without the org prefix.
     if "/" not in model:

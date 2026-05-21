@@ -28,6 +28,7 @@ class BackendRegistry:
         self._backend: ASRBackend | None = None
         self._lock = asyncio.Lock()
         self._last_used: float = 0.0
+        self._active_requests: int = 0
         self._idle_task: asyncio.Task[None] | None = None
 
     @property
@@ -43,6 +44,7 @@ class BackendRegistry:
     async def get(self, *, model: str | None, want_plus_features: bool) -> ASRBackend:
         target = normalize_model_id(model, want_plus_features=want_plus_features)
         async with self._lock:
+            self._last_used = time.monotonic()
             wants_nar = _is_nar(target)
             current_is_nar = isinstance(self._backend, GraniteNARBackend)
             if self._backend is not None and wants_nar != current_is_nar:
@@ -60,6 +62,23 @@ class BackendRegistry:
                 await self._backend.load(target, settings.resolved_device())
             self._last_used = time.monotonic()
             return self._backend
+
+    async def acquire(
+        self, *, model: str | None, want_plus_features: bool
+    ) -> ASRBackend:
+        """Return a loaded backend and pin it until ``release`` is called."""
+        backend = await self.get(model=model, want_plus_features=want_plus_features)
+        async with self._lock:
+            self._active_requests += 1
+            self._last_used = time.monotonic()
+        return backend
+
+    async def release(self) -> None:
+        """Release a backend previously pinned by ``acquire``."""
+        async with self._lock:
+            if self._active_requests > 0:
+                self._active_requests -= 1
+            self._last_used = time.monotonic()
 
     def touch(self) -> None:
         """Mark the model as just-used (call after a successful inference)."""
@@ -108,15 +127,24 @@ class BackendRegistry:
         try:
             while True:
                 await asyncio.sleep(interval)
-                idle = self.idle_seconds
-                if idle is None:
+                async with self._lock:
+                    if self._backend is None or self._active_requests > 0:
+                        continue
+                    idle = max(0.0, time.monotonic() - self._last_used)
+                    if idle < ttl:
+                        continue
+                    backend = self._backend
+                    model_id = backend.model_id
+                    self._backend = None
+                    self._last_used = 0.0
+
+                if backend is None:
                     continue
-                if idle >= ttl:
-                    log.info(
-                        "Auto-unloading %s after %.0fs idle (ttl=%ss)",
-                        self.loaded_model, idle, ttl,
-                    )
-                    await self.unload()
+                log.info(
+                    "Auto-unloading %s after %.0fs idle (ttl=%ss)",
+                    model_id, idle, ttl,
+                )
+                await backend.unload()
         except asyncio.CancelledError:
             raise
 

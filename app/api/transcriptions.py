@@ -107,7 +107,7 @@ async def transcribe(
         max_speakers=max_speakers,
     )
 
-    backend = await registry.get(model=req.model, want_plus_features=want_plus)
+    backend = await registry.acquire(model=req.model, want_plus_features=want_plus)
 
     if do_stream:
         return StreamingResponse(
@@ -115,8 +115,10 @@ async def transcribe(
             media_type="application/x-ndjson",
         )
 
-    segments, detected_lang = await backend.transcribe(req)
-    registry.touch()
+    try:
+        segments, detected_lang = await backend.transcribe(req)
+    finally:
+        await registry.release()
     text = _join_segments(segments).strip()
 
     fmt = response_format.lower()
@@ -196,7 +198,9 @@ def _to_vtt(segments: list[TranscriptionSegment]) -> str:
 
 
 async def _ndjson_stream(backend, req: TranscriptionRequest, duration: float):
-    yield json.dumps({"type": "duration", "duration": duration}) + "\n"
-    async for event in backend.transcribe_stream(req):
-        yield json.dumps(event) + "\n"
-    registry.touch()
+    try:
+        yield json.dumps({"type": "duration", "duration": duration}) + "\n"
+        async for event in backend.transcribe_stream(req):
+            yield json.dumps(event) + "\n"
+    finally:
+        await registry.release()
