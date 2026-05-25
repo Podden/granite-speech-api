@@ -264,19 +264,27 @@ class GraniteBackend(ASRBackend):
 
         loop = asyncio.get_running_loop()
 
+        # Capture all model references as locals so that a concurrent unload()
+        # setting self._tokenizer / _processor / _model to None cannot cause
+        # AttributeError inside the executor thread.
+        tokenizer = self._tokenizer
+        processor = self._processor
+        model = self._model
+        device = self._device
+
         def _infer() -> str:
-            inputs = self._processor(
-                prompt_text, wav, device=self._device, return_tensors="pt"
-            ).to(self._device)
+            inputs = processor(
+                prompt_text, wav, device=device, return_tensors="pt"
+            ).to(device)
             with torch.inference_mode():
-                outputs = self._model.generate(
+                outputs = model.generate(
                     **inputs,
                     max_new_tokens=max_new_tokens,
                     do_sample=False,
                     num_beams=1,
                 )
             new_tokens = outputs[0, inputs["input_ids"].shape[-1]:]
-            return self._tokenizer.decode(
+            return tokenizer.decode(
                 new_tokens, add_special_tokens=False, skip_special_tokens=True
             )
 
