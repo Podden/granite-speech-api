@@ -117,22 +117,29 @@ class GraniteBackend(ASRBackend):
         await self.unload()
         log.info("Loading Granite model %s on %s (%s)", model_id, device, self._dtype)
         # Heavy import — defer.
-        from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
+        from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, AutoTokenizer
 
-        def _load() -> tuple[Any, Any]:
+        def _load() -> tuple[Any, Any, Any]:
             proc = AutoProcessor.from_pretrained(model_id)
+            # proc.tokenizer may be None in newer transformers versions for
+            # multi-modal processors — load explicitly to be safe.
+            tok = (
+                proc.tokenizer
+                if getattr(proc, "tokenizer", None) is not None
+                else AutoTokenizer.from_pretrained(model_id)
+            )
             mdl = AutoModelForSpeechSeq2Seq.from_pretrained(
                 model_id,
                 device_map=device,
                 dtype=self._dtype,
             )
             mdl.eval()
-            return proc, mdl
+            return proc, tok, mdl
 
         loop = asyncio.get_running_loop()
-        proc, mdl = await loop.run_in_executor(None, _load)
+        proc, tok, mdl = await loop.run_in_executor(None, _load)
         self._processor = proc
-        self._tokenizer = proc.tokenizer
+        self._tokenizer = tok
         self._model = mdl
         self._device = device
         self.model_id = model_id
@@ -244,6 +251,8 @@ class GraniteBackend(ASRBackend):
         return "<|audio|> transcribe the speech with proper punctuation and capitalization."
 
     async def _run(self, wav: torch.Tensor, user_prompt: str, max_new_tokens: int) -> str:
+        if self._tokenizer is None:
+            raise RuntimeError("Tokenizer not loaded — backend in inconsistent state")
         is_plus = self.model_id == GRANITE_PLUS
         chat: list[dict] = []
         if is_plus:
