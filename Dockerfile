@@ -1,28 +1,41 @@
-FROM python:3.11-slim AS base
+FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
+    UV_NO_CACHE=1 \
+    UV_COMPILE_BYTECODE=1 \
     HF_HOME=/data/hf-cache
 
+# uv for fast installs
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libsndfile1 ffmpeg ca-certificates curl git && \
+        libsndfile1 ffmpeg ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install torch first so cache survives app changes.
-# CUDA 12.1 wheels by default; build with --build-arg TORCH_INDEX=... to override:
-#   ROCm:  https://download.pytorch.org/whl/rocm6.0
+# CUDA 12.8 wheels by default (first version with torch ≥ 2.7).
+# Override with --build-arg TORCH_INDEX=... :
+#   ROCm:  https://download.pytorch.org/whl/rocm6.3
 #   CPU:   https://download.pytorch.org/whl/cpu
-#   CUDA:  https://download.pytorch.org/whl/cu121 (default), .../cu124, .../cu128
-ARG TORCH_INDEX=https://download.pytorch.org/whl/cu121
-RUN pip install --index-url ${TORCH_INDEX} torch torchaudio
+#   CUDA:  https://download.pytorch.org/whl/cu121, cu124, cu128 (default)
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cu128
+
+# Install torch first — layer cached independently of app code changes.
+RUN uv pip install --system \
+        --index-url "${TORCH_INDEX}" \
+        "torch>=2.7" "torchaudio>=2.7"
 
 COPY pyproject.toml README.md ./
 COPY app ./app
 
-RUN pip install .
+# Install remaining app deps.
+# --extra-index-url lets uv find the already-installed CUDA torch (>=2.7 satisfied)
+# so it is NOT replaced by a PyPI rebuild.
+RUN uv pip install --system \
+        --extra-index-url "${TORCH_INDEX}" \
+        .
 
 EXPOSE 8000
 VOLUME ["/data/hf-cache"]

@@ -3,10 +3,9 @@ services:
     build:
       context: .
       args:
-        # Default = CUDA. For ROCm or CPU, use the overlay files (compose.rocm.yml / compose.cpu.yml)
-        # which set TORCH_INDEX accordingly. Or override here:
-        #   docker compose build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu128
-        TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cu121}
+        # Default = CUDA 12.8 (torch ≥ 2.7). For ROCm or CPU, use the overlay files.
+        # Override: docker compose build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu121
+        TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cu128}
     image: granite-speech-api:latest
     container_name: granite-speech-api
     restart: unless-stopped

@@ -1,11 +1,11 @@
 """Backend for the non-autoregressive granite-speech-4.1-2b-nar.
 
 This model has a different API than the AR family:
-- AutoModel + AutoFeatureExtractor (not Seq2SeqLM + Processor)
+- AutoModel + AutoProcessor (not Seq2SeqLM + Processor)
 - trust_remote_code=True
 - Prefers flash_attention_2; falls back to sdpa for non-CUDA / non-flash-attn setups
-- No chat template, no `<|audio|>` token. Just feeds waveforms to .generate()
-- Output is `output.text_preds[0]`
+- No chat template, no `<|audio|>` token. Just feeds waveforms to .transcribe()
+- Output decoded via processor.batch_decode(output.preds)[0]
 - Supports only ASR (no AST / no SAA / no word timestamps / no KWB)
 """
 
@@ -61,7 +61,7 @@ class GraniteNARBackend(ASRBackend):
             "Loading NAR model %s on %s (%s, attn=%s)",
             model_id, device, self._dtype, attn_impl,
         )
-        from transformers import AutoFeatureExtractor, AutoModel
+        from transformers import AutoModel, AutoProcessor
 
         def _load() -> tuple[Any, Any]:
             mdl = AutoModel.from_pretrained(
@@ -72,7 +72,7 @@ class GraniteNARBackend(ASRBackend):
                 dtype=self._dtype,
             )
             mdl.eval()
-            ext = AutoFeatureExtractor.from_pretrained(model_id, trust_remote_code=True)
+            ext = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
             return mdl, ext
 
         loop = asyncio.get_running_loop()
@@ -114,11 +114,14 @@ class GraniteNARBackend(ASRBackend):
             def _infer() -> str:
                 inputs = self._extractor([waveform], device=self._device)
                 with torch.inference_mode():
-                    output = self._model.generate(**inputs)
-                preds = getattr(output, "text_preds", None)
-                if not preds:
-                    raise RuntimeError("NAR model returned no text_preds")
-                return preds[0]
+                    output = self._model.transcribe(**inputs)
+                preds = getattr(output, "preds", None)
+                if preds is None:
+                    raise RuntimeError("NAR model returned no preds")
+                texts = self._extractor.batch_decode(preds)
+                if not texts:
+                    raise RuntimeError("NAR processor decoded empty result")
+                return texts[0]
 
             text = await loop.run_in_executor(None, _infer)
 
