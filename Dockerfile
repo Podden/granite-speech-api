@@ -23,8 +23,10 @@ WORKDIR /app
 ARG TORCH_INDEX=https://download.pytorch.org/whl/cu128
 
 # Install torch first — layer cached independently of app code changes.
+# TORCH_INDEX is primary (CUDA wheels); PyPI is extra (provides torch deps like filelock).
 RUN uv pip install --system \
         --index-url "${TORCH_INDEX}" \
+        --extra-index-url "https://pypi.org/simple" \
         "torch>=2.7" "torchaudio>=2.7"
 
 COPY pyproject.toml README.md ./

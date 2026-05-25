@@ -4,7 +4,7 @@ services:
   granite-speech-api:
     build:
       args:
-        TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cu121}
+        TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cu128}
     environment:
       GRANITE_DEVICE: cuda
     deploy:
