@@ -7,11 +7,17 @@ from typing import Any
 
 import torch
 
-from app.audio import load_audio_bytes
+from app.audio import TARGET_SR, load_audio_bytes, split_into_windows
 from app.backends.base import ASRBackend
+from app.config import settings
 from app.schema import TranscriptionRequest, TranscriptionSegment, TranscriptionWord
 
 log = logging.getLogger(__name__)
+
+# Matches any <|...|> special-token artifact the model occasionally emits as
+# literal text (e.g. <|fim_middle|>). These are not real transcription and break
+# downstream tiktoken-based consumers, so we strip them from decoded output.
+_SPECIAL_TOKEN_RE = re.compile(r"<\|[^|>]*\|>")
 
 
 GRANITE_BASE = "ibm-granite/granite-speech-4.1-2b"
@@ -174,44 +180,100 @@ class GraniteBackend(ASRBackend):
         wav, duration = load_audio_bytes(req.audio_bytes)
 
         is_plus = self.model_id == GRANITE_PLUS
-
         want_words = req.word_timestamps and is_plus
         want_speakers = req.speaker_attribution and is_plus
 
+        # Granite Speech degenerates on long audio, so split into short windows
+        # (snapped to silence) and transcribe each, offsetting timestamps.
+        windows = split_into_windows(
+            wav,
+            window_seconds=settings.chunk_seconds,
+            search_seconds=settings.chunk_boundary_search_seconds,
+        )
+        if len(windows) > 1:
+            log.info(
+                "Splitting %.1fs audio into %d windows of ~%.0fs",
+                duration, len(windows), settings.chunk_seconds,
+            )
+
+        # Incremental decoding: for pure speaker-attribution, carry a tail of the
+        # previous chunk's transcript forward as a decoder prefix so the model
+        # keeps speaker numbering consistent across chunk seams.
+        use_prefix = (
+            want_speakers and not want_words and settings.speaker_prefix_passing
+        )
+        prefix = ""
+        last_speaker: str | None = None
+
+        segments: list[TranscriptionSegment] = []
         async with self._lock:
-            if want_words and want_speakers:
-                # Two-pass: word-timestamps + speakers, merge by sequential alignment.
-                ts_text = await self._run(wav, self._build_prompt(
-                    word_timestamps=True, speaker_attribution=False, req=req,
-                ), max_new_tokens=10000)
-                spk_text = await self._run(wav, self._build_prompt(
-                    word_timestamps=False, speaker_attribution=True, req=req,
-                ), max_new_tokens=4000)
-                segments = _merge_words_and_speakers(ts_text, spk_text)
-            elif want_words:
-                ts_text = await self._run(wav, self._build_prompt(
-                    word_timestamps=True, speaker_attribution=False, req=req,
-                ), max_new_tokens=10000)
-                segments = _parse_word_timestamps(ts_text)
-            elif want_speakers:
-                spk_text = await self._run(wav, self._build_prompt(
-                    word_timestamps=False, speaker_attribution=True, req=req,
-                ), max_new_tokens=4000)
-                segments = _parse_speaker_segments(spk_text, duration)
-            else:
-                text = await self._run(wav, self._build_prompt(
-                    word_timestamps=False, speaker_attribution=False, req=req,
-                ), max_new_tokens=2000)
-                segments = [
-                    TranscriptionSegment(
-                        id=0, start=0.0, end=duration, text=text.strip()
-                    )
-                ]
+            for start_s, end_s in windows:
+                window_wav = wav[:, start_s:end_s]
+                t_off = start_s / TARGET_SR
+                win_dur = (end_s - start_s) / TARGET_SR
+                segs, cont = await self._transcribe_window(
+                    window_wav, win_dur, req, want_words, want_speakers,
+                    prefix=prefix if use_prefix else "",
+                    initial_speaker=last_speaker if use_prefix else None,
+                )
+                _offset_and_renumber(segs, t_off, len(segments))
+                segments.extend(segs)
+                if use_prefix:
+                    if segs and segs[-1].speaker:
+                        last_speaker = segs[-1].speaker
+                    # Minimal cue: an OPEN speaker tag for the current speaker.
+                    # Seeding the full prior transcript makes the model emit EOS
+                    # immediately (empty chunk); an open tag keeps it transcribing
+                    # while anchoring the speaker number across the seam.
+                    prefix = _speaker_cue(last_speaker)
 
         language = req.language or _guess_lang(req.translate_to)
         return segments, language
 
     # ----- Internals -----
+
+    async def _transcribe_window(
+        self,
+        wav: torch.Tensor,
+        duration: float,
+        req: TranscriptionRequest,
+        want_words: bool,
+        want_speakers: bool,
+        prefix: str = "",
+        initial_speaker: str | None = None,
+    ) -> tuple[list[TranscriptionSegment], str]:
+        """Transcribe a single (already-windowed) waveform. Times are window-local.
+
+        Returns (segments, continuation_text). `continuation_text` is the raw
+        speaker-tagged model output, used to seed the next chunk's prefix when
+        incremental decoding is active; empty for non-speaker paths.
+        """
+        if want_words and want_speakers:
+            # Two-pass: word-timestamps + speakers, merge by sequential alignment.
+            ts_text = await self._run(wav, self._build_prompt(
+                word_timestamps=True, speaker_attribution=False, req=req,
+            ), max_new_tokens=4000)
+            spk_text = await self._run(wav, self._build_prompt(
+                word_timestamps=False, speaker_attribution=True, req=req,
+            ), max_new_tokens=2000)
+            return _merge_words_and_speakers(ts_text, spk_text), ""
+        if want_words:
+            ts_text = await self._run(wav, self._build_prompt(
+                word_timestamps=True, speaker_attribution=False, req=req,
+            ), max_new_tokens=4000)
+            return _parse_word_timestamps(ts_text), ""
+        if want_speakers:
+            spk_text = await self._run(wav, self._build_prompt(
+                word_timestamps=False, speaker_attribution=True, req=req,
+            ), max_new_tokens=2000, prefix=prefix)
+            segs = _parse_speaker_segments(
+                spk_text, duration, initial_speaker=initial_speaker
+            )
+            return segs, spk_text
+        text = await self._run(wav, self._build_prompt(
+            word_timestamps=False, speaker_attribution=False, req=req,
+        ), max_new_tokens=1000)
+        return [TranscriptionSegment(id=0, start=0.0, end=duration, text=text.strip())], ""
 
     def _build_prompt(
         self,
@@ -225,9 +287,10 @@ class GraniteBackend(ASRBackend):
 
         if speaker_attribution and is_plus:
             return (
-                "<|audio|> Speaker attribution: Transcribe and denote who is "
-                "speaking by adding [Speaker 1]: and [Speaker 2]: tags before "
-                "speaker turns."
+                "<|audio|> Speaker attribution: Transcribe the speech and label "
+                "each speaker turn with a [Speaker N]: tag (e.g. [Speaker 1]:, "
+                "[Speaker 2]:, [Speaker 3]:), assigning a new number to each "
+                "distinct speaker you hear."
             )
         if word_timestamps and is_plus:
             return (
@@ -250,7 +313,13 @@ class GraniteBackend(ASRBackend):
         # Default: punctuated + capitalized ASR.
         return "<|audio|> transcribe the speech with proper punctuation and capitalization."
 
-    async def _run(self, wav: torch.Tensor, user_prompt: str, max_new_tokens: int) -> str:
+    async def _run(
+        self,
+        wav: torch.Tensor,
+        user_prompt: str,
+        max_new_tokens: int,
+        prefix: str = "",
+    ) -> str:
         if self._tokenizer is None:
             raise RuntimeError("Tokenizer not loaded — backend in inconsistent state")
         is_plus = self.model_id == GRANITE_PLUS
@@ -261,6 +330,10 @@ class GraniteBackend(ASRBackend):
         prompt_text = self._tokenizer.apply_chat_template(
             chat, tokenize=False, add_generation_prompt=True
         )
+        # Incremental decoding: seed the assistant turn with the previous chunk's
+        # transcript tail so generation continues it (consistent speaker numbering).
+        if prefix:
+            prompt_text = prompt_text + prefix
 
         loop = asyncio.get_running_loop()
 
@@ -284,9 +357,12 @@ class GraniteBackend(ASRBackend):
                     num_beams=1,
                 )
             new_tokens = outputs[0, inputs["input_ids"].shape[-1]:]
-            return tokenizer.decode(
+            decoded = tokenizer.decode(
                 new_tokens, add_special_tokens=False, skip_special_tokens=True
             )
+            # skip_special_tokens drops registered specials, but Granite's FIM
+            # tokens (<|fim_middle|>, …) come back as literal text — strip them.
+            return _SPECIAL_TOKEN_RE.sub("", decoded)
 
         return await loop.run_in_executor(None, _infer)
 
@@ -298,6 +374,20 @@ def _guess_lang(translate_to: str | None) -> str | None:
     if not translate_to:
         return None
     return translate_to[:2].lower()
+
+
+def _offset_and_renumber(
+    segments: list[TranscriptionSegment], t_off: float, id_base: int
+) -> None:
+    """Shift window-local segment/word times by `t_off` and renumber ids in place."""
+    for i, s in enumerate(segments):
+        s.id = id_base + i
+        s.start = round(s.start + t_off, 3)
+        s.end = round(s.end + t_off, 3)
+        if s.words:
+            for w in s.words:
+                w.start = round(w.start + t_off, 3)
+                w.end = round(w.end + t_off, 3)
 
 
 def _decode_centiseconds(centi: int, last_end: float, offset: float) -> tuple[float, float]:
@@ -350,13 +440,33 @@ def _parse_word_timestamps(text: str) -> list[TranscriptionSegment]:
     ]
 
 
-def _parse_speaker_segments(text: str, duration: float) -> list[TranscriptionSegment]:
-    """Parse output of the speaker-attribution prompt: `[Speaker N]: text...`."""
+def _speaker_cue(last_speaker: str | None) -> str:
+    """Decoder prefix for the next chunk: an OPEN [Speaker N]: tag for the
+    speaker active at the end of the previous chunk. Anchors the numbering
+    without seeding text the model would treat as a finished answer."""
+    if not last_speaker:
+        return ""
+    try:
+        n = int(last_speaker.rsplit("_", 1)[-1]) + 1
+    except ValueError:
+        return ""
+    return f"[Speaker {n}]:"
+
+
+def _parse_speaker_segments(
+    text: str, duration: float, initial_speaker: str | None = None
+) -> list[TranscriptionSegment]:
+    """Parse output of the speaker-attribution prompt: `[Speaker N]: text...`.
+
+    `initial_speaker` seeds the speaker for any leading text before the first
+    tag — used during incremental decoding, where a chunk continues the previous
+    chunk's final speaker turn until a new [Speaker N]: tag appears.
+    """
     # Split on speaker tags but keep them.
     parts = re.split(r"(\[Speaker\s+\d+\]\s*:)", text)
     # parts may start with leading text before any tag — treat as Speaker 1 fallback.
     segments: list[TranscriptionSegment] = []
-    current_speaker: str | None = None
+    current_speaker: str | None = initial_speaker
     buf: list[str] = []
 
     def flush() -> None:

@@ -99,3 +99,52 @@ def get_duration(data: bytes) -> float:
 
 def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
+
+
+def split_into_windows(
+    wav: torch.Tensor,
+    *,
+    sr: int = TARGET_SR,
+    window_seconds: float = 30.0,
+    search_seconds: float = 3.0,
+    min_seconds: float = 1.0,
+) -> list[tuple[int, int]]:
+    """Split a [1, N] (or [N]) waveform into ~`window_seconds` windows.
+
+    Returns a list of (start_sample, end_sample) pairs covering the whole
+    signal with no gaps or overlap. Each nominal cut point is snapped to the
+    lowest-energy 20 ms frame within +/- `search_seconds` so we cut during
+    silence/pauses instead of mid-word. Short audio returns a single window.
+    """
+    mono = wav.mean(dim=0) if wav.dim() > 1 else wav
+    n = int(mono.shape[-1])
+    win = int(window_seconds * sr)
+    if win <= 0 or n <= win:
+        return [(0, n)]
+
+    frame = max(1, int(0.02 * sr))  # 20 ms energy frames
+    n_frames = n // frame
+    if n_frames < 2:
+        return [(0, n)]
+    env = mono[: n_frames * frame].reshape(n_frames, frame).pow(2).mean(dim=1)
+
+    search_f = max(1, int(search_seconds / 0.02))
+    min_samp = int(min_seconds * sr)
+
+    bounds = [0]
+    pos = win
+    while pos < n:
+        center_f = pos // frame
+        lo_f = max((bounds[-1] + min_samp) // frame, center_f - search_f)
+        hi_f = min(n_frames, center_f + search_f)
+        if hi_f > lo_f:
+            cut = (lo_f + int(torch.argmin(env[lo_f:hi_f]).item())) * frame
+        else:
+            cut = pos
+        if cut <= bounds[-1]:
+            cut = min(n, bounds[-1] + win)
+        bounds.append(cut)
+        pos = cut + win
+    if bounds[-1] != n:
+        bounds.append(n)
+    return [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)]
