@@ -55,6 +55,45 @@ _LANG_NAMES = {
 }
 
 
+# A word that ends a sentence (possibly followed by closing quotes/brackets).
+_SENT_END_RE = re.compile(r"[.!?…]['\")\]»]*$")
+
+
+def _snap_speakers_to_sentences(
+    words: list[TranscriptionWord], max_sentence_words: int = 40
+) -> None:
+    """Majority-vote the speaker per sentence.
+
+    Word-level turn assignment flickers on backchannels and boundary jitter,
+    producing speaker switches mid-sentence. Since the fusion text is
+    punctuated, every word in a sentence votes (weighted by duration) and the
+    winner labels the whole sentence. Runaway sentences without punctuation
+    are capped so crosstalk can't be swallowed entirely.
+    """
+    sent: list[TranscriptionWord] = []
+
+    def flush() -> None:
+        if not sent:
+            return
+        durations: dict[str, float] = {}
+        for w in sent:
+            if w.speaker:
+                durations[w.speaker] = durations.get(w.speaker, 0.0) + max(
+                    0.0, w.end - w.start
+                )
+        if durations:
+            best = max(durations, key=durations.get)  # type: ignore[arg-type]
+            for w in sent:
+                w.speaker = best
+        sent.clear()
+
+    for w in words:
+        sent.append(w)
+        if _SENT_END_RE.search(w.word) or len(sent) >= max_sentence_words:
+            flush()
+    flush()
+
+
 def _norm_token(s: str) -> str:
     return re.sub(r"[\W_]+", "", s, flags=re.UNICODE).lower()
 
@@ -243,6 +282,7 @@ class FusionBackend(ASRBackend):
             from app.diarization import assign_speakers
 
             assign_speakers(words, turns)
+            _snap_speakers_to_sentences(words)
             segments = _speaker_runs_to_segments(words)
         else:
             if req.speaker_attribution:

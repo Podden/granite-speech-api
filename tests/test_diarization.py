@@ -76,6 +76,23 @@ def test_speaker_runs_to_segments() -> None:
     assert segs[0].words and len(segs[0].words) == 2
 
 
+def test_snap_speakers_to_sentences() -> None:
+    from app.backends.fusion import _snap_speakers_to_sentences
+
+    # One sentence with a single flickered word in the middle + a short
+    # standalone interjection that must keep its own speaker.
+    words = [
+        _w("Das", 0.0, 0.2), _w("ist", 0.2, 0.4), _w("ein", 0.4, 0.6),
+        _w("Test.", 0.6, 1.0), _w("Genau.", 1.1, 1.4),
+    ]
+    for w in words[:4]:
+        w.speaker = "SPEAKER_00"
+    words[2].speaker = "SPEAKER_01"  # flicker
+    words[4].speaker = "SPEAKER_01"  # real interjection
+    _snap_speakers_to_sentences(words)
+    assert [w.speaker for w in words] == ["SPEAKER_00"] * 4 + ["SPEAKER_01"]
+
+
 def test_fusion_resolution_and_capabilities() -> None:
     from app.backends.catalog import FUSION, supports_diarization
 
