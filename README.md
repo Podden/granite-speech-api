@@ -96,19 +96,32 @@ granite-speech-api    # or: uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ## Models & feature matrix
 
-| Feature                       | `2b` (default) | `2b-plus`       | `2b-nar`     |
-| ----------------------------- | :------------: | :-------------: | :----------: |
-| Plain ASR                     | ✅             | ✅              | ✅           |
-| Punctuation + Capitalization  | ✅             | ❌              | ✅           |
-| Word-level timestamps         | ❌             | ✅ via `[T:N]`  | ❌           |
-| Speaker attribution (SAA)     | ❌             | ✅ `[Speaker N]:`| ❌           |
-| Keyword biasing               | ✅             | ✅              | ✅           |
-| Speech translation (AST)      | ✅ 7 langs     | ❌              | ❌           |
-| Japanese ASR                  | ✅             | ❌              | ❌           |
-| Throughput                    | medium         | medium          | **fastest**  |
+| Feature                        | `2b` (default) | `2b-plus`        | `2b-nar`     | Cohere Transcribe | Qwen3-ASR    |
+| ------------------------------ | :------------: | :--------------: | :----------: | :---------------: | :----------: |
+| Plain ASR                      | ✅             | ✅               | ✅           | ✅                | ✅           |
+| Punctuation + capitalization   | ✅             | ✅ (plain ASR)   | ✅           | ✅ (best)         | ✅           |
+| Word-level timestamps          | ❌             | ✅ via `[T:N]`   | ❌           | ❌                | ❌ ¹         |
+| Punctuation **with** word timestamps | ❌       | ❌ ²             | ❌           | ❌                | ❌           |
+| Speaker attribution (pyannote) | via auto-upgrade | ✅             | ❌           | ❌ (400)          | ❌ (400)     |
+| Speaker attribution (native SAA) | ❌           | ✅ `[Speaker N]:`| ❌           | ❌                | ❌           |
+| Keyword biasing (`prompt`)     | ✅             | ✅               | ✅           | ❌                | ❌           |
+| Speech translation (AST)       | ✅ 7 langs     | ❌               | ❌           | ❌                | ❌           |
+| Language auto-detect           | ❌             | ❌               | ❌           | ❌ (code required)| ✅ 52 langs  |
+| German conversational ASR      | ❌ translates! | ✅               | untested     | ✅                | ✅           |
+| Live token deltas (`delta`)    | ✅             | ✅               | ❌           | ❌                | ❌           |
+| Long audio                     | chunked 8 min  | chunked 8 min / 3 min (TS) | chunked | built-in chunking | chunked 5 min |
+| Gated (needs `GRANITE_HF_TOKEN`) | no           | no               | no           | **yes**           | no           |
+| Relative speed (5-min clip)    | ~35 s          | ~35–75 s         | fastest (claimed) | **~10 s**    | ~40 s        |
 
-**Supported languages** (ASR): English, French, German, Spanish, Portuguese
-(Japanese also supported by `2b`).
+¹ Word timestamps would need the separate `Qwen3-ForcedAligner-0.6B-hf` (not integrated yet).
+² Verified empirically (July 2026): the `[T:N]` timestamp task always emits lowercase,
+  punctuation-free output — prompt variants asking for punctuation have zero effect.
+  Consequence: pyannote-diarized transcripts are lowercase/unpunctuated too, since they
+  are built from the word-timestamp pass.
+
+**Granite languages** (ASR): English, French, German, Spanish, Portuguese
+(Japanese also supported by `2b`). **Cohere**: 14 languages (en, fr, de, it, es,
+pt, el, nl, pl, zh, ja, ko, vi, ar). **Qwen**: 52 languages/dialects.
 
 > **NAR notes:** the NAR backend is implemented but only smoke-tested. It uses
 > a different transformers API (`AutoModel` + `AutoFeatureExtractor`,
