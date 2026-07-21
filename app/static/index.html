@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transkription — granite-speech</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='2' height='6' x='1' y='5' fill='%230f62fe'/%3E%3Crect width='2' height='12' x='4' y='2' fill='%230f62fe'/%3E%3Crect width='2' height='8' x='7' y='4' fill='%230f62fe'/%3E%3Crect width='2' height='12' x='10' y='2' fill='%230f62fe'/%3E%3Crect width='2' height='4' x='13' y='6' fill='%230f62fe'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-name">granite&#8202;-&#8202;speech</span>
+    <span class="brand-sub">Transkription</span>
+  </div>
+  <div class="server-state" id="server-state" title="Serverstatus">
+    <span class="dot" id="health-dot"></span>
+    <span id="health-text">Verbinde&hellip;</span>
+  </div>
+</header>
+
+<main>
+  <!-- ── 1 · Datei ───────────────────────────────────────────── -->
+  <section class="card" id="card-file">
+    <h2><span class="step-no">1</span> Datei ausw&auml;hlen</h2>
+    <div class="dropzone" id="dropzone" tabindex="0" role="button"
+         aria-label="Audio- oder Videodatei ausw&auml;hlen">
+      <input type="file" id="file-input" accept="audio/*,video/*,.mkv,.m4a,.opus" hidden>
+      <div class="dz-idle" id="dz-idle">
+        <p class="dz-main">Audio- oder Videodatei hierher ziehen</p>
+        <p class="dz-sub">oder klicken zum Ausw&auml;hlen &mdash; mp3, wav, m4a, opus, mp4, mkv, mov &hellip;</p>
+        <p class="dz-note">Bei Videos wird die Tonspur direkt im Browser extrahiert,
+           es wird kein Video hochgeladen.</p>
+      </div>
+      <div class="dz-file" id="dz-file" hidden>
+        <canvas id="waveform" width="1200" height="120"></canvas>
+        <div class="file-meta">
+          <span id="file-name" class="mono"></span>
+          <span id="file-info" class="mono muted"></span>
+          <button type="button" class="btn-ghost" id="btn-reset">Andere Datei</button>
+        </div>
+      </div>
+    </div>
+    <p class="field-error" id="file-error" hidden></p>
+  </section>
+
+  <!-- ── 2 · Einstellungen ──────────────────────────────────── -->
+  <section class="card" id="card-settings">
+    <h2><span class="step-no">2</span> Einstellungen</h2>
+
+    <fieldset class="speakers">
+      <legend>Wie viele Personen sprechen in der Aufnahme?</legend>
+      <div class="radio-row">
+        <label class="radio-card">
+          <input type="radio" name="speakers" value="single" checked>
+          <span class="radio-title">Eine Person</span>
+          <span class="radio-desc">Reines Transkript, schnellste Verarbeitung.</span>
+        </label>
+        <label class="radio-card">
+          <input type="radio" name="speakers" value="multi">
+          <span class="radio-title">Mehrere Personen</span>
+          <span class="radio-desc">Sprecher werden erkannt und im Text markiert
+            (<span class="mono">[Sprecher 1]</span>&hellip;).</span>
+        </label>
+      </div>
+      <div class="speaker-opts" id="speaker-opts" hidden>
+        <label>Anzahl Sprecher (falls bekannt)
+          <span class="minmax">
+            <input type="number" id="min-speakers" min="1" max="20" placeholder="min">
+            &ndash;
+            <input type="number" id="max-speakers" min="1" max="20" placeholder="max">
+          </span>
+        </label>
+      </div>
+    </fieldset>
+
+    <details class="advanced" id="advanced">
+      <summary>Erweiterte Optionen</summary>
+      <div class="adv-grid">
+        <label>Sprache der Aufnahme
+          <select id="opt-language">
+            <option value="">Nicht angeben</option>
+            <option value="de" selected>Deutsch</option>
+            <option value="en">Englisch</option>
+            <option value="fr">Franz&ouml;sisch</option>
+            <option value="es">Spanisch</option>
+            <option value="pt">Portugiesisch</option>
+            <option value="ja">Japanisch (nur Modell 2b)</option>
+          </select>
+        </label>
+        <label>Modell
+          <select id="opt-model">
+            <option value="">Automatisch</option>
+            <option value="granite-speech-4.1-2b">2b &mdash; Standard</option>
+            <option value="granite-speech-4.1-2b-plus">2b-plus &mdash; Sprecher &amp; Wort-Timestamps</option>
+            <option value="granite-speech-4.1-2b-nar">2b-nar &mdash; am schnellsten</option>
+          </select>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="opt-word-ts">
+          Wort-Timestamps (f&uuml;r Untertitel, nutzt 2b-plus)
+        </label>
+        <label>&Uuml;bersetzen nach
+          <select id="opt-translate">
+            <option value="">Nicht &uuml;bersetzen</option>
+            <option value="german">Deutsch</option>
+            <option value="english">Englisch</option>
+            <option value="french">Franz&ouml;sisch</option>
+            <option value="spanish">Spanisch</option>
+            <option value="portuguese">Portugiesisch</option>
+            <option value="italian">Italienisch</option>
+            <option value="japanese">Japanisch</option>
+            <option value="mandarin">Mandarin</option>
+          </select>
+        </label>
+        <label class="wide">Fachbegriffe / Namen (verbessert die Erkennung, kommagetrennt)
+          <input type="text" id="opt-keywords" placeholder="z.&nbsp;B. Kubernetes, VR Bits, Leipzig">
+        </label>
+      </div>
+    </details>
+
+    <button type="button" class="btn-primary" id="btn-start" disabled>Transkription starten</button>
+  </section>
+
+  <!-- ── 3 · Status ─────────────────────────────────────────── -->
+  <section class="card" id="card-status" hidden>
+    <h2><span class="step-no">3</span> Verarbeitung</h2>
+    <ol class="stepper" id="stepper">
+      <li data-step="prepare">Audio vorbereiten</li>
+      <li data-step="upload">Hochladen</li>
+      <li data-step="transcribe">Transkribieren</li>
+      <li data-step="done">Fertig</li>
+    </ol>
+    <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+    <p class="status-line"><span id="status-text">&nbsp;</span><span class="mono muted" id="status-detail"></span></p>
+    <button type="button" class="btn-ghost" id="btn-cancel">Abbrechen</button>
+  </section>
+
+  <!-- ── 4 · Ergebnis ───────────────────────────────────────── -->
+  <section class="card" id="card-result" hidden>
+    <h2><span class="step-no">4</span> Transkript</h2>
+    <div class="transcript" id="transcript" aria-live="polite"></div>
+    <div class="result-actions">
+      <button type="button" class="btn-primary" id="btn-copy">Text kopieren</button>
+      <span class="dl-group">
+        Herunterladen:
+        <button type="button" class="btn-ghost dl" data-fmt="txt">.txt</button>
+        <button type="button" class="btn-ghost dl" data-fmt="srt">.srt</button>
+        <button type="button" class="btn-ghost dl" data-fmt="vtt">.vtt</button>
+        <button type="button" class="btn-ghost dl" data-fmt="json">.json</button>
+      </span>
+    </div>
+  </section>
+
+  <!-- ── Protokoll ──────────────────────────────────────────── -->
+  <details class="logbox" id="logbox">
+    <summary>Technisches Protokoll</summary>
+    <pre id="log" class="mono"></pre>
+  </details>
+</main>
+
+<footer>
+  <span>IBM Granite Speech 4.1 &middot; VR Bits</span>
+  <a href="/docs" target="_blank" rel="noopener">API-Dokumentation</a>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

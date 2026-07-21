@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api import api_router
 from app.backends import registry
@@ -45,6 +48,18 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
+
+# Browser upload UI (served at /ui, / redirects there).
+app.mount(
+    "/ui",
+    StaticFiles(directory=Path(__file__).parent / "static", html=True),
+    name="ui",
+)
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    return RedirectResponse("/ui/")
 
 
 def run() -> None:

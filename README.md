@@ -10,7 +10,14 @@ served natively by `granite-speech-4.1-2b-plus`.
 
 ## Features
 
+- **Browser upload UI** at `/` (served from `app/static/`): drag & drop audio/video,
+  client-side audio extraction from video (Web Audio API, no video bytes uploaded),
+  single/multi-speaker mode, live progress, txt/srt/vtt/json export, log panel.
 - **OpenAI-compatible** `POST /v1/audio/transcriptions` (multipart-form, all standard fields).
+- **Long-audio chunking**: audio beyond the model limits (9 min ASR/SAA, 3.5 min
+  word timestamps) is split at quiet points; SAA uses the model-card incremental
+  scheme (cumulative audio + `prefix_text`) to keep speaker numbering stable.
+  Degenerate repetition loops are detected and collapsed.
 - **Three Granite Speech 4.1 backends** behind one HTTP surface:
   - `granite-speech-4.1-2b` — default, autoregressive, supports AST + Japanese
   - `granite-speech-4.1-2b-plus` — adds speaker labels + per-word timestamps
@@ -115,9 +122,9 @@ Multipart form. Everything except `file` is optional.
 
 | Field                          | Type     | Notes                                                                                              |
 | ------------------------------ | -------- | -------------------------------------------------------------------------------------------------- |
-| `file`                         | file     | Audio (mp3, wav, ogg, m4a, flac, …)                                                                |
+| `file`                         | file     | Audio (mp3, wav, ogg, m4a, flac, …) or video (audio track extracted via ffmpeg)                    |
 | `model`                        | string   | Granite model id; auto-upgrades to `-plus` for rich features                                       |
-| `language`                     | string   | ISO-639-1 hint, echoed back in `verbose_json` (Granite does not detect language itself)            |
+| `language`                     | string   | ISO-639-1 hint. Non-English hints auto-upgrade to `-plus` (the base model tends to translate non-English speech to English instead of transcribing) |
 | `response_format`              | string   | `json` (default), `text`, `srt`, `vtt`, `verbose_json`                                             |
 | `timestamp_granularities[]`    | string   | `segment` (default), `word` (forces `-plus`)                                                       |
 | `prompt`                       | string   | Comma-separated keywords for biased ASR                                                            |
@@ -253,6 +260,7 @@ the model resident forever, set `GRANITE_IDLE_UNLOAD_SECONDS=-1`.
 | `GRANITE_DEVICE`             | `auto`                                   | `auto` / `cuda` / `cuda:0` / `rocm` / `cpu`      |
 | `GRANITE_DTYPE`              | `bfloat16`                               | `bfloat16` / `float16` / `float32`               |
 | `GRANITE_MAX_AUDIO_SECONDS`  | `600`                                    | Reject longer audio with HTTP 413                |
+| `GRANITE_REPETITION_PENALTY` | `1.0`                                    | `generate()` repetition penalty (1.0 = off); chunking already prevents most loops |
 | `GRANITE_IDLE_UNLOAD_SECONDS`| `600`                                    | Auto-unload model after N seconds idle. `-1` disables. |
 | `GRANITE_IDLE_CHECK_INTERVAL`| `30`                                     | How often the idle monitor wakes up (seconds)    |
 | `GRANITE_CORS_ORIGINS`       | `*`                                      | Comma-separated, or `*`                          |
@@ -292,9 +300,10 @@ docker compose -f docker-compose.yml -f docker-compose.cuda.yml \
 ```
 granite-speech-api/
 ├── app/
-│   ├── main.py                 # FastAPI app, lifespan, CORS, run()
+│   ├── main.py                 # FastAPI app, lifespan, CORS, static UI, run()
 │   ├── config.py               # pydantic-settings (GRANITE_* env)
 │   ├── audio.py                # libsndfile + audioread/ffmpeg → mono 16 kHz
+│   ├── static/                 # browser upload UI (vanilla JS, IBM Plex)
 │   ├── api/
 │   │   ├── transcriptions.py   # POST /v1/audio/transcriptions
 │   │   ├── models.py           # GET /v1/models, POST /v1/models/{load,unload}
@@ -338,8 +347,6 @@ HF weights, so they run fast on plain CI.
 
 ## Backlog
 
-- [ ] Chunking for audio > 9 min ASR/SAA, > 5 min timestamps, with
-  `prefix_text`-based incremental decoding.
 - [ ] Real token-level streaming via `TextIteratorStreamer`.
 - [ ] Bearer-token auth (env `API_KEY`) for direct-internet exposure.
 - [ ] vLLM-backed alternative path for high-throughput production deployments.
