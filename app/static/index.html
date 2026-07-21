@@ -83,6 +83,16 @@
       </div>
     </fieldset>
 
+    <fieldset class="formats">
+      <legend>Ausgabeformate (Download nach Abschluss)</legend>
+      <div class="fmt-row">
+        <label><input type="checkbox" class="fmt" value="txt" checked> .txt &mdash; reiner Text</label>
+        <label><input type="checkbox" class="fmt" value="srt" checked> .srt &mdash; Untertitel</label>
+        <label><input type="checkbox" class="fmt" value="vtt"> .vtt &mdash; Web-Untertitel</label>
+        <label><input type="checkbox" class="fmt" value="json"> .json &mdash; mit Zeitstempeln</label>
+      </div>
+    </fieldset>
+
     <details class="advanced" id="advanced">
       <summary>Erweiterte Optionen</summary>
       <div class="adv-grid">
@@ -151,8 +161,9 @@
     <div class="transcript" id="transcript" aria-live="polite"></div>
     <div class="result-actions">
       <button type="button" class="btn-primary" id="btn-copy">Text kopieren</button>
+      <button type="button" class="btn-primary" id="btn-dl-selected">Herunterladen (Auswahl)</button>
       <span class="dl-group">
-        Herunterladen:
+        Einzeln:
         <button type="button" class="btn-ghost dl" data-fmt="txt">.txt</button>
         <button type="button" class="btn-ghost dl" data-fmt="srt">.srt</button>
         <button type="button" class="btn-ghost dl" data-fmt="vtt">.vtt</button>
@@ -202,6 +213,7 @@
   <a href="/docs" target="_blank" rel="noopener">API-Dokumentation</a>
 </footer>
 
+<script src="opus.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

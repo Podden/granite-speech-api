@@ -74,9 +74,14 @@ async function refreshHealth() {
     const h = await res.json();
     els.healthDot.className = "dot ok";
     const device = h.device === "cuda" ? "GPU" : "CPU";
-    els.healthText.textContent = h.loaded_model
+    let text = h.loaded_model
       ? `Bereit (${device}, Modell geladen)`
       : `Bereit (${device})`;
+    const active = h.queue?.active_jobs || 0;
+    if (active > 0) {
+      text = `${active} Auftrag${active > 1 ? "e" : ""} in Arbeit (${device})`;
+    }
+    els.healthText.textContent = text;
     if (h.max_audio_seconds) state.maxSeconds = h.max_audio_seconds;
   } catch (err) {
     els.healthDot.className = "dot err";
@@ -139,23 +144,32 @@ async function onFileSelected(file) {
     state.peaks = computePeaks(mono, 600);
     drawWaveform(0);
 
+    // Smallest upload wins: Opus (~32 kbit/s, WebCodecs) → original audio
+    // file → 16 kHz mono WAV as universal fallback.
+    const base = file.name.replace(/\.[^.]+$/, "");
     const wav = encodeWav(mono, audio.sampleRate);
-    // For plain audio files the original can be smaller than 16-bit WAV
-    // (e.g. opus/mp3) — upload whichever is smaller. Videos always get
-    // stripped to WAV.
-    if (!isVideo && file.size < wav.size) {
-      state.uploadBlob = file;
-      state.uploadName = file.name;
-      log(`Original (${fmtSize(file.size)}) ist kleiner als konvertiertes WAV (${fmtSize(wav.size)}) — Original wird hochgeladen.`);
-    } else {
-      state.uploadBlob = wav;
-      state.uploadName = file.name.replace(/\.[^.]+$/, "") + ".wav";
-      log(`Audio extrahiert: ${fmtDuration(audio.duration)}, 16 kHz mono, ${fmtSize(wav.size)}` +
-          (isVideo ? ` (statt ${fmtSize(file.size)} Video — ${(100 - (wav.size / file.size) * 100).toFixed(0)} % gespart)` : ""));
+    let upload = { blob: wav, name: base + ".wav", label: "16 kHz mono WAV" };
+    if (await oggOpusSupported(audio.sampleRate)) {
+      try {
+        const ogg = await encodeOggOpus(mono, audio.sampleRate);
+        if (ogg.size < upload.blob.size) {
+          upload = { blob: ogg, name: base + ".ogg", label: "Opus 32 kbit/s" };
+        }
+      } catch (err) {
+        log(`Opus-Kompression fehlgeschlagen (${err.message}) — nutze WAV.`, "warn");
+      }
     }
+    if (!isVideo && file.size < upload.blob.size) {
+      upload = { blob: file, name: file.name, label: "Original" };
+    }
+    state.uploadBlob = upload.blob;
+    state.uploadName = upload.name;
+    log(`Audio vorbereitet: ${fmtDuration(audio.duration)}, Upload als ${upload.label} ` +
+        `(${fmtSize(upload.blob.size)} statt ${fmtSize(file.size)} — ` +
+        `${Math.max(0, 100 - (upload.blob.size / file.size) * 100).toFixed(0)} % gespart)`);
     els.fileInfo.textContent =
-      `${fmtDuration(audio.duration)} · Upload: ${fmtSize(state.uploadBlob.size)}` +
-      (isVideo ? ` (Tonspur aus ${fmtSize(file.size)} Video)` : "");
+      `${fmtDuration(audio.duration)} · Upload: ${fmtSize(state.uploadBlob.size)} (${upload.label})` +
+      (isVideo ? ` · Tonspur aus ${fmtSize(file.size)} Video` : "");
   } catch (err) {
     log(`Browser-Dekodierung fehlgeschlagen (${err.message || err.name}) — Original wird hochgeladen, der Server extrahiert die Tonspur.`, "warn");
     state.uploadBlob = file;
@@ -223,9 +237,9 @@ let playheadRaf = 0;
 
 function setupPlayer() {
   if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
-  // Prefer whatever we upload: extracted WAV is always playable; if the
-  // original was kept (opus/mp3), the browser decoded it already.
-  const src = state.uploadBlob || state.file;
+  // The original file is the playback source — the browser just decoded it,
+  // so it can play it (video files play their audio track in <audio>).
+  const src = state.file;
   if (!src) return;
   state.audioUrl = URL.createObjectURL(src);
   audioEl.src = state.audioUrl;
@@ -292,13 +306,27 @@ function seekFromEvent(e) {
 }
 
 let scrubbing = false;
+let scrubPlaying = false; // audio only plays while the pointer is held down
+
 els.waveform.addEventListener("pointerdown", (e) => {
   scrubbing = true;
   els.waveform.setPointerCapture(e.pointerId);
   seekFromEvent(e);
+  if (audioEl.paused && audioEl.src) {
+    scrubPlaying = true;
+    audioEl.play().catch(() => { scrubPlaying = false; });
+  }
 });
 els.waveform.addEventListener("pointermove", (e) => { if (scrubbing) seekFromEvent(e); });
-els.waveform.addEventListener("pointerup", () => { scrubbing = false; });
+function endScrub() {
+  scrubbing = false;
+  if (scrubPlaying) {
+    audioEl.pause();
+    scrubPlaying = false;
+  }
+}
+els.waveform.addEventListener("pointerup", endScrub);
+els.waveform.addEventListener("pointercancel", endScrub);
 
 /* Wort-Highlight beim Abspielen/Scrubben (nur mit Wort-Timestamps). */
 let wordSpans = [];
@@ -352,10 +380,15 @@ function drawWaveform(progress) {
     const n = state.peaks.length;
     const bw = W / n;
     const doneX = W * state.lastProgress;
+    const dur0 = state.duration || audioEl.duration;
+    const playedX = dur0 && audioEl.currentTime > 0
+      ? (audioEl.currentTime / dur0) * W : 0;
     for (let i = 0; i < n; i++) {
       const x = i * bw;
       const h = Math.max(2, state.peaks[i] * (H - 8));
-      ctx.fillStyle = css.getPropertyValue(x < doneX ? "--wave-done" : "--wave").trim();
+      // Played portion (teal) wins over transcription progress (blue).
+      const varName = x < playedX ? "--wave-played" : (x < doneX ? "--wave-done" : "--wave");
+      ctx.fillStyle = css.getPropertyValue(varName).trim();
       ctx.fillRect(x, mid - h / 2, Math.max(1, bw - 1), h);
     }
   }
@@ -388,6 +421,37 @@ function setPhase(stepId, text, detail) {
 function setProgress(pct, indeterminate) {
   els.progressFill.classList.toggle("indeterminate", !!indeterminate);
   if (!indeterminate) els.progressFill.style.width = `${Math.min(100, pct)}%`;
+}
+
+/* ── Warteschlange (Server verarbeitet einen Auftrag nach dem anderen) ── */
+
+let queueTimer = 0;
+
+function startQueuePolling() {
+  stopQueuePolling();
+  queueTimer = setInterval(async () => {
+    try {
+      const h = await (await fetch("/health")).json();
+      const q = h.queue;
+      if (!q || q.active_jobs <= 1) return;
+      const rtf = q.rtf || 10;
+      // Oldest jobs first; our own job is the newest → everything else is ahead.
+      const jobs = [...q.jobs].sort((a, b) => b.elapsed - a.elapsed);
+      const ahead = jobs.slice(0, -1);
+      if (!ahead.length) return;
+      const etaS = ahead.reduce(
+        (s, j) => s + Math.max(0, j.duration - j.elapsed * rtf) / rtf, 0
+      );
+      setPhase("transcribe", "In der Warteschlange…",
+        `${ahead.length} Auftrag${ahead.length > 1 ? "e" : ""} vor dir · ` +
+        `geschätzt noch ~${fmtDuration(Math.max(5, etaS))}`);
+    } catch { /* Header-Healthcheck meldet Ausfälle */ }
+  }, 4000);
+}
+
+function stopQueuePolling() {
+  if (queueTimer) clearInterval(queueTimer);
+  queueTimer = 0;
 }
 
 /* ── Transcription ──────────────────────────────────────── */
@@ -462,6 +526,7 @@ function beginTranscription() {
       setPhase("transcribe", "Warte auf Server…", "");
       setProgress(0, true);
       log("Upload abgeschlossen.");
+      startQueuePolling();
     }
   };
 
@@ -496,6 +561,7 @@ function handleEvent(line) {
       log(`Server bestätigt Audio: ${fmtDuration(ev.duration)}`);
       break;
     case "status": {
+      stopQueuePolling();
       const short = (ev.model || "").split("/").pop();
       if (ev.stage === "loading_model") {
         setPhase("transcribe", "Modell wird geladen…",
@@ -542,6 +608,7 @@ function handleEvent(line) {
 
 function onRequestDone(xhr) {
   state.xhr = null;
+  stopQueuePolling();
   if (xhr.status !== 200) {
     let msg = `HTTP ${xhr.status}`;
     try { msg = JSON.parse(xhr.responseText).detail || msg; } catch { /* keep */ }
@@ -570,6 +637,7 @@ function onRequestDone(xhr) {
 
 function fail(msg) {
   if (state.xhr) { state.xhr.abort(); state.xhr = null; }
+  stopQueuePolling();
   setProgress(0, false);
   for (const li of els.stepper.children) {
     if (li.className === "active") li.className = "error";
@@ -586,6 +654,7 @@ function fail(msg) {
 
 function cancelTranscription() {
   if (state.xhr) { state.xhr.abort(); state.xhr = null; }
+  stopQueuePolling();
   setProgress(0, false);
   els.cardStatus.hidden = true;
   els.btnStart.disabled = false;
@@ -706,6 +775,11 @@ function buildExport(fmt, segments, text, filename, duration) {
 
 function download(fmt) {
   buildExport(fmt, state.segments, plainText(), state.file?.name, state.duration);
+}
+
+function selectedFormats() {
+  const fmts = Array.from(document.querySelectorAll(".fmt:checked")).map((c) => c.value);
+  return fmts.length ? fmts : ["txt"];
 }
 
 function resetResult() {
@@ -915,6 +989,16 @@ function appendBatchResult(item) {
   body.textContent = item.result.text;
   const acts = document.createElement("div");
   acts.className = "result-actions";
+  const sel = document.createElement("button");
+  sel.type = "button";
+  sel.className = "btn-ghost";
+  sel.textContent = "Auswahl herunterladen";
+  sel.addEventListener("click", () => {
+    for (const fmt of selectedFormats()) {
+      buildExport(fmt, item.result.segments, item.result.text, item.result.name, item.result.duration);
+    }
+  });
+  acts.appendChild(sel);
   for (const fmt of ["txt", "srt", "vtt", "json"]) {
     const b = document.createElement("button");
     b.type = "button";
@@ -969,6 +1053,9 @@ $("#btn-copy").addEventListener("click", async () => {
 document.querySelectorAll(".dl").forEach((b) =>
   b.addEventListener("click", () => download(b.dataset.fmt))
 );
+$("#btn-dl-selected").addEventListener("click", () => {
+  for (const fmt of selectedFormats()) download(fmt);
+});
 document.querySelectorAll(".fb-rate").forEach((b) =>
   b.addEventListener("click", () => {
     fbRating = fbRating === b.dataset.rating ? null : b.dataset.rating;

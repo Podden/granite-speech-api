@@ -34,6 +34,7 @@
   --err: #da1e28;
   --wave: #c6c6c6;
   --wave-done: #0f62fe;
+  --wave-played: #007d79;
   --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
@@ -49,6 +50,7 @@
     --accent-hover: #78a9ff;
     --wave: #525252;
     --wave-done: #4589ff;
+    --wave-played: #08bdba;
   }
 }
 
@@ -136,7 +138,12 @@ main { max-width: 860px; margin: 2rem auto 4rem; padding: 0 1rem; display: grid;
 .dz-sub { margin: 0.35rem 0 0; color: var(--text-2); }
 .dz-note { margin: 0.9rem 0 0; font-size: 0.8rem; color: var(--text-2); }
 #waveform { width: 100%; height: 60px; display: block; cursor: pointer; touch-action: none; }
-.btn-play { min-width: 2.4rem; }
+.btn-play {
+  width: 2.6rem;
+  padding-left: 0;
+  padding-right: 0;
+  text-align: center;
+}
 
 .batch-list {
   list-style: none;
@@ -187,6 +194,11 @@ fieldset.speakers legend { padding: 0; margin-bottom: 0.6rem; font-weight: 600; 
 .speaker-opts label { display: flex; align-items: center; gap: 0.75rem; font-size: 0.9rem; }
 .minmax { display: inline-flex; align-items: center; gap: 0.4rem; }
 .speaker-opts input[type="number"] { width: 4.5rem; }
+
+fieldset.formats { border: 0; margin: 0 0 1rem; padding: 0; }
+fieldset.formats legend { padding: 0; margin-bottom: 0.5rem; font-weight: 600; }
+.fmt-row { display: flex; gap: 1.25rem; flex-wrap: wrap; font-size: 0.88rem; }
+.fmt-row label { display: inline-flex; align-items: center; gap: 0.4rem; }
 
 .advanced { margin: 0 0 1.25rem; border: 1px solid var(--border); }
 .advanced summary {

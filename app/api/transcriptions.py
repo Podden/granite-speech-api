@@ -11,6 +11,7 @@ from app.audio import get_duration
 from app.backends import registry
 from app.backends.granite import normalize_model_id
 from app.config import settings
+from app.jobs import tracker
 from app.schema import (
     TranscriptionRequest,
     TranscriptionResponse,
@@ -212,11 +213,13 @@ async def transcribe(
             media_type="application/x-ndjson",
         )
 
+    job_id = tracker.enter(duration)
     backend = await registry.acquire(model=req.model, want_plus_features=want_plus)
     try:
         segments, detected_lang = await backend.transcribe(req)
     finally:
         await registry.release()
+        tracker.exit(job_id)
     text = _join_segments(segments).strip()
 
     fmt = response_format.lower()
@@ -297,6 +300,7 @@ def _to_vtt(segments: list[TranscriptionSegment]) -> str:
 
 async def _ndjson_stream(req: TranscriptionRequest, duration: float, want_plus: bool):
     backend = None
+    job_id = tracker.enter(duration)
     try:
         yield json.dumps({"type": "duration", "duration": duration}) + "\n"
 
@@ -322,3 +326,4 @@ async def _ndjson_stream(req: TranscriptionRequest, duration: float, want_plus: 
     finally:
         if backend is not None:
             await registry.release()
+        tracker.exit(job_id)

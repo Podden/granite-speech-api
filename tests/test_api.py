@@ -154,3 +154,35 @@ def test_feedback_without_rating(client: TestClient, tmp_path, monkeypatch) -> N
     entry = client.get("/v1/feedback").json()[0]
     assert entry["rating"] is None
     assert entry["category"] == "feature"
+
+
+def test_job_tracker() -> None:
+    from app.jobs import JobTracker
+
+    t = JobTracker()
+    snap = t.snapshot()
+    assert snap["active_jobs"] == 0
+    assert snap["queue_eta_seconds"] == 0.0
+
+    j1 = t.enter(120.0)
+    j2 = t.enter(60.0)
+    snap = t.snapshot()
+    assert snap["active_jobs"] == 2
+    assert snap["queue_eta_seconds"] > 0
+    assert snap["rtf"] is None  # no completed job yet
+
+    import time
+
+    time.sleep(0.02)  # ensure measurable wall time on coarse clocks
+    t.exit(j1)
+    t.exit(j2)
+    snap = t.snapshot()
+    assert snap["active_jobs"] == 0
+    assert snap["rtf"] is not None and snap["rtf"] > 0
+
+    t.exit(999)  # unknown id is a no-op
+
+
+def test_health_exposes_queue(client: TestClient) -> None:
+    q = client.get("/health").json()["queue"]
+    assert "active_jobs" in q and "queue_eta_seconds" in q
