@@ -130,12 +130,12 @@
         </label>
         <label>Modell
           <select id="opt-model">
-            <option value="">Automatisch</option>
-            <option value="granite-speech-4.1-2b">2b &mdash; Standard</option>
-            <option value="granite-speech-4.1-2b-plus">2b-plus &mdash; Sprecher &amp; Wort-Timestamps</option>
-            <option value="granite-speech-4.1-2b-nar">2b-nar &mdash; am schnellsten</option>
-            <option value="cohere-transcribe">Cohere Transcribe &mdash; Test, keine Sprecher</option>
-            <option value="qwen3-asr">Qwen3-ASR &mdash; Test, keine Sprecher</option>
+            <option value="fusion" selected>Automatisch &mdash; Fusion (Interpunktion + Sprecher + Wort-Timestamps)</option>
+            <option value="">Granite 2b &mdash; bisheriger Standard</option>
+            <option value="granite-speech-4.1-2b-plus">Granite 2b-plus &mdash; Sprecher &amp; Wort-Timestamps</option>
+            <option value="granite-speech-4.1-2b-nar">Granite 2b-nar &mdash; am schnellsten</option>
+            <option value="cohere-transcribe">Cohere Transcribe &mdash; nur Text, keine Sprecher</option>
+            <option value="qwen3-asr">Qwen3-ASR &mdash; nur Text, keine Sprecher</option>
           </select>
         </label>
         <label class="check">

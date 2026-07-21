@@ -9,7 +9,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from app.audio import get_duration
 from app.backends import registry
-from app.backends.catalog import is_granite, resolve_model_id
+from app.backends.catalog import is_granite, resolve_model_id, supports_diarization
 from app.config import settings
 from app.diarization import diarizer
 from app.jobs import tracker
@@ -210,13 +210,18 @@ async def transcribe(
     want_plus = word_ts or do_diarize or (non_english and not do_translate)
 
     target_model = resolve_model_id(model, want_plus_features=want_plus)
-    if do_diarize and not is_granite(target_model):
+    if do_translate and not is_granite(target_model):
+        # AST is a granite-2b-only capability — route translation there.
+        log.info("Translation requested on %s — using granite base instead", target_model)
+        model = None
+        target_model = resolve_model_id(None, want_plus_features=False)
+    if do_diarize and not supports_diarization(target_model):
         raise HTTPException(
             status_code=400,
             detail=(
                 f"{target_model} does not support speaker attribution — "
                 "it has no word timestamps to reconcile diarization turns with. "
-                "Use a granite model or disable speaker attribution."
+                "Use a granite model or `fusion`, or disable speaker attribution."
             ),
         )
 

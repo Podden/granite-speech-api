@@ -76,6 +76,17 @@ def test_speaker_runs_to_segments() -> None:
     assert segs[0].words and len(segs[0].words) == 2
 
 
+def test_fusion_resolution_and_capabilities() -> None:
+    from app.backends.catalog import FUSION, supports_diarization
+
+    assert resolve_model_id("fusion", want_plus_features=False) == FUSION
+    assert resolve_model_id("auto", want_plus_features=True) == FUSION
+    assert supports_diarization(FUSION)
+    assert supports_diarization(resolve_model_id(None, want_plus_features=True))
+    assert not supports_diarization(COHERE_TRANSCRIBE)
+    assert not supports_diarization(QWEN3_ASR)
+
+
 def test_resolve_model_id_external_aliases() -> None:
     assert resolve_model_id("cohere-transcribe", want_plus_features=True) == COHERE_TRANSCRIBE
     assert resolve_model_id("qwen3-asr", want_plus_features=False) == QWEN3_ASR

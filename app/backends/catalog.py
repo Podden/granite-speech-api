@@ -14,9 +14,15 @@ COHERE_TRANSCRIBE = "CohereLabs/cohere-transcribe-03-2026"
 # repo requires Qwen's qwen-asr package (pins an incompatible transformers).
 QWEN3_ASR = "Qwen/Qwen3-ASR-1.7B-hf"
 
-EXTERNAL_MODELS = {COHERE_TRANSCRIBE, QWEN3_ASR}
+# Multi-pass pipeline: Cohere text + Qwen forced-aligner timestamps
+# (+ pyannote turns when speaker attribution is requested).
+FUSION = "fusion"
+
+EXTERNAL_MODELS = {COHERE_TRANSCRIBE, QWEN3_ASR, FUSION}
 
 _EXTERNAL_ALIASES = {
+    "fusion": FUSION,
+    "auto": FUSION,
     "cohere-transcribe": COHERE_TRANSCRIBE,
     "cohere-transcribe-03-2026": COHERE_TRANSCRIBE,
     "coherelabs/cohere-transcribe-03-2026": COHERE_TRANSCRIBE,
@@ -40,3 +46,8 @@ def resolve_model_id(model: str | None, *, want_plus_features: bool) -> str:
 
 def is_granite(model_id: str) -> bool:
     return model_id in GRANITE_MODELS
+
+
+def supports_diarization(model_id: str) -> bool:
+    """Models that produce word timestamps to reconcile pyannote turns with."""
+    return model_id in GRANITE_MODELS or model_id == FUSION
