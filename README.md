@@ -116,6 +116,34 @@ granite-speech-api    # or: uvicorn app.main:app --host 0.0.0.0 --port 8000
 > `flash-attn` for best throughput, otherwise it falls back to PyTorch SDPA.
 > NAR does not produce punctuation, AST, timestamps or speaker labels.
 
+### Additional ASR backends (evaluation)
+
+Beyond Granite, the registry dispatches to two more model families (same
+hot-swap + idle-unload semantics; one model in VRAM at a time):
+
+- **`CohereLabs/cohere-transcribe-03-2026`** (alias `cohere-transcribe`) —
+  2B conformer encoder-decoder, 14 languages, long-form chunking built into
+  the feature extractor. Plain ASR only.
+- **`Qwen/Qwen3-ASR-1.7B`** (alias `qwen3-asr`) — 52 languages with automatic
+  language identification (via the `qwen-asr` package). Long audio is chunked
+  at quiet points server-side. Plain ASR only.
+
+Neither produces word timestamps yet, so speaker attribution is rejected for
+them (400).
+
+### Speaker diarization (pyannote)
+
+`speaker_attribution=true` now runs a dedicated diarization stage by default:
+[pyannote `speaker-diarization-community-1`](https://huggingface.co/pyannote/speaker-diarization-community-1)
+produces speaker turns, the Granite `-plus` word-timestamp pass produces word
+timings, and the two are reconciled into speaker-labelled segments. This
+replaces the Granite SAA pass (which remains available via
+`diarization_engine=granite` and as automatic fallback).
+
+Requirements: the pipeline is **gated** — set `GRANITE_HF_TOKEN` to a
+HuggingFace token whose account accepted the model conditions. The pipeline
+(~500 MB VRAM) is lazy-loaded and idle-unloaded like the ASR models.
+
 ---
 
 ## API

@@ -14,6 +14,7 @@ from starlette.requests import Request as StarletteRequest
 from app.api import api_router
 from app.backends import registry
 from app.config import settings
+from app.diarization import diarizer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,7 +38,9 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     # Lazy-load on first request — keeps cold start fast and avoids OOM
     # when no transcription is ever requested.
     registry.start_idle_monitor()
+    diarizer.start_idle_monitor()
     yield
+    await diarizer.shutdown()
     await registry.shutdown()
 
 

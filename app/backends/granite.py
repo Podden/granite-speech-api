@@ -201,9 +201,14 @@ class GraniteBackend(ASRBackend):
         is_plus = self.model_id == GRANITE_PLUS
         want_words = req.word_timestamps and is_plus
         want_speakers = req.speaker_attribution and is_plus
+        # Turns from the external (pyannote) diarization stage replace the
+        # model's own SAA pass: one word-timestamp pass + turn reconciliation.
+        use_turns = bool(req.diarization_turns) and is_plus
 
         # Progress accounting in processed audio-seconds across all passes.
-        total_work = duration * (2 if (want_words and want_speakers) else 1)
+        total_work = duration * (
+            2 if (want_words and want_speakers and not use_turns) else 1
+        )
         done_work = 0.0
 
         def tick(seconds: float) -> None:
@@ -217,7 +222,15 @@ class GraniteBackend(ASRBackend):
                 partial_cb(text.strip(), round(start, 3), round(end, 3))
 
         async with self._lock:
-            if want_words and want_speakers:
+            if use_turns:
+                from app.diarization import assign_speakers
+
+                words = await self._words_pass(wav, duration, req, tick, partial, delta_cb)
+                assign_speakers(words, req.diarization_turns)
+                segments = _speaker_runs_to_segments(words) or _segments_from_words(
+                    words, fallback_end=duration
+                )
+            elif want_words and want_speakers:
                 # Two-pass: word-timestamps + speakers, merge by sequential alignment.
                 # Live partials/deltas come from the first (word-timestamp) pass only.
                 words = await self._words_pass(wav, duration, req, tick, partial, delta_cb)
@@ -748,7 +761,16 @@ def _merge_words_and_speakers(
             # advance one token inside the turn (allow imperfect match)
             token_idx += 1
 
-    # Build per-speaker segments from contiguous runs of words with the same speaker.
+    segments = _speaker_runs_to_segments(ts_words)
+    if not segments:
+        segments = _segments_from_words(ts_words, fallback_end=duration)
+    return segments
+
+
+def _speaker_runs_to_segments(
+    ts_words: list[TranscriptionWord],
+) -> list[TranscriptionSegment]:
+    """Build per-speaker segments from contiguous runs of same-speaker words."""
     segments: list[TranscriptionSegment] = []
     run: list[TranscriptionWord] = []
 
@@ -773,7 +795,4 @@ def _merge_words_and_speakers(
             flush_run()
         run.append(w)
     flush_run()
-
-    if not segments:
-        segments = _segments_from_words(ts_words, fallback_end=duration)
     return segments

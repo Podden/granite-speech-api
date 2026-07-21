@@ -36,8 +36,11 @@ COPY app ./app
 
 # Install remaining app deps.
 # --extra-index-url lets uv find the already-installed CUDA torch (>=2.7 satisfied)
-# so it is NOT replaced by a PyPI rebuild.
+# so it is NOT replaced by a PyPI rebuild. unsafe-best-match: the torch index
+# mirrors stale copies of common packages (e.g. tqdm<=4.66.5) and uv's default
+# first-index strategy would pin those, breaking pyannote's resolution.
 RUN uv pip install --system \
+        --index-strategy unsafe-best-match \
         --extra-index-url "${TORCH_INDEX}" \
         .
 

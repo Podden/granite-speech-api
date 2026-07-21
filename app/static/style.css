@@ -190,10 +190,17 @@ fieldset.speakers legend { padding: 0; margin-bottom: 0.6rem; font-weight: 600; 
 .radio-card input { margin-right: 0.4rem; accent-color: var(--accent); }
 .radio-title { font-weight: 600; }
 .radio-desc { display: block; margin-top: 0.2rem; font-size: 0.82rem; color: var(--text-2); }
-.speaker-opts { margin-top: 0.75rem; }
+.speaker-opts { margin-top: 0.75rem; display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; }
 .speaker-opts label { display: flex; align-items: center; gap: 0.75rem; font-size: 0.9rem; }
-.minmax { display: inline-flex; align-items: center; gap: 0.4rem; }
-.speaker-opts input[type="number"] { width: 4.5rem; }
+.speaker-opts .muted { font-size: 0.8rem; }
+
+/* Speaker rename row under the transcript */
+.speaker-names {
+  display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+  margin-top: 0.75rem; font-size: 0.85rem;
+}
+.spk-edit-title { color: var(--text-2); font-weight: 600; }
+.speaker-names input { width: 9rem; }
 
 fieldset.formats { border: 0; margin: 0 0 1rem; padding: 0; }
 fieldset.formats legend { padding: 0; margin-bottom: 0.5rem; font-weight: 600; }

@@ -4,6 +4,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from app.backends import registry
+from app.backends.catalog import COHERE_TRANSCRIBE, QWEN3_ASR
 from app.backends.granite import GRANITE_BASE, GRANITE_NAR, GRANITE_PLUS
 from app.config import settings
 from app.schema import ModelInfo, ModelList
@@ -13,12 +14,14 @@ router = APIRouter()
 
 @router.get("/v1/models", response_model=ModelList, summary="List available models")
 async def list_models() -> ModelList:
-    """List the Granite Speech model ids accepted by `/v1/audio/transcriptions`."""
+    """List the model ids accepted by `/v1/audio/transcriptions`."""
     return ModelList(
         data=[
             ModelInfo(id=GRANITE_BASE),
             ModelInfo(id=GRANITE_PLUS),
             ModelInfo(id=GRANITE_NAR),
+            ModelInfo(id=COHERE_TRANSCRIBE, owned_by="cohere"),
+            ModelInfo(id=QWEN3_ASR, owned_by="qwen"),
         ]
     )
 

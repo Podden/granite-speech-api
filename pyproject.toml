@@ -16,11 +16,13 @@ dependencies = [
     "numpy>=1.26",
     "torch>=2.7",
     "torchaudio>=2.7",
-    "transformers>=4.52.1",
+    # >=5.9: needs granite_speech_plus + qwen3_asr + cohere_asr architectures
+    "transformers>=5.9",
     "accelerate>=0.30",
     "huggingface-hub>=0.24",
     "peft>=0.11",
     "audioread>=3.0",
+    "pyannote.audio>=4.0",
 ]
 
 [project.optional-dependencies]

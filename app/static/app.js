@@ -462,18 +462,21 @@ function buildFormData() {
   fd.append("file", state.uploadBlob, state.uploadName);
   fd.append("stream", "true");
 
-  const multi = document.querySelector('input[name="speakers"]:checked').value === "multi";
-  if (multi) {
-    fd.append("speaker_attribution", "true");
-    const min = $("#min-speakers").value, max = $("#max-speakers").value;
-    if (min) fd.append("min_speakers", min);
-    if (max) fd.append("max_speakers", max);
-  }
-  if ($("#opt-word-ts").checked) fd.append("timestamp_granularities[]", "word");
-  const lang = $("#opt-language").value;
-  if (lang) fd.append("language", lang);
   const model = $("#opt-model").value;
   if (model) fd.append("model", model);
+  // Cohere/Qwen have no word timestamps → no speaker reconciliation possible.
+  const noSpeakers = model === "cohere-transcribe" || model === "qwen3-asr";
+  const multi = document.querySelector('input[name="speakers"]:checked').value === "multi";
+  if (multi && noSpeakers) {
+    log(`${model}: keine Sprecher-Erkennung möglich — Option wird ignoriert.`, "err");
+  } else if (multi) {
+    fd.append("speaker_attribution", "true");
+    const n = $("#num-speakers").value;
+    if (n) fd.append("num_speakers", n);
+  }
+  if ($("#opt-word-ts").checked && !noSpeakers) fd.append("timestamp_granularities[]", "word");
+  const lang = $("#opt-language").value;
+  if (lang) fd.append("language", lang);
   const translateTo = $("#opt-translate").value;
   if (translateTo) { fd.append("translate", "true"); fd.append("translate_to", translateTo); }
   const keywords = $("#opt-keywords").value.trim();
@@ -573,6 +576,14 @@ function handleEvent(line) {
       } else if (ev.stage === "model_ready") {
         setPhase("transcribe", "Server transkribiert…", short);
         log(`Modell bereit: ${ev.model}`);
+      } else if (ev.stage === "diarizing") {
+        setPhase("transcribe", "Sprecher werden erkannt…",
+          ev.cold ? "Diarisierungs-Modell wird geladen" : "");
+        log("Sprecher-Erkennung (pyannote) läuft…");
+      } else if (ev.stage === "diarization_ready") {
+        log(ev.engine === "pyannote"
+          ? `Sprecher-Erkennung fertig: ${ev.speakers} Sprecher gefunden`
+          : "Sprecher-Erkennung: Fallback auf Granite-Modell");
       }
       break;
     }
@@ -639,6 +650,7 @@ function onRequestDone(xhr) {
   els.cardResult.hidden = false;
   state.liveText = "";
   renderTranscript();
+  renderSpeakerEditor();
   log(`Transkription abgeschlossen in ${secs} s (${state.segments.length} Segmente).`);
   els.cardResult.scrollIntoView({ behavior: "smooth", block: "nearest" });
   state.finishCb?.resolve();
@@ -691,8 +703,38 @@ function scheduleLiveRender() {
 }
 
 function speakerLabel(spk) {
+  const custom = (state.speakerNames || {})[spk];
+  if (custom) return custom;
   const m = /(\d+)/.exec(spk || "");
   return m ? `Sprecher ${parseInt(m[1], 10) + 1}` : spk;
+}
+
+/* Editable name per detected speaker — renames flow into the transcript
+   rendering and all downloads (they resolve labels via speakerLabel()). */
+function renderSpeakerEditor() {
+  const box = $("#speaker-names");
+  const speakers = [...new Set(state.segments.map((s) => s.speaker).filter(Boolean))];
+  box.textContent = "";
+  box.hidden = speakers.length === 0;
+  if (!speakers.length) return;
+  const title = document.createElement("span");
+  title.className = "spk-edit-title";
+  title.textContent = "Sprecher benennen:";
+  box.appendChild(title);
+  for (const spk of speakers) {
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.placeholder = speakerLabel(spk);
+    inp.value = (state.speakerNames || {})[spk] || "";
+    inp.addEventListener("input", () => {
+      state.speakerNames = state.speakerNames || {};
+      const v = inp.value.trim();
+      if (v) state.speakerNames[spk] = v;
+      else delete state.speakerNames[spk];
+      renderTranscript();
+    });
+    box.appendChild(inp);
+  }
 }
 
 function appendSegment(seg) {
@@ -822,6 +864,8 @@ function resetResult() {
   state.partials = [];
   state.liveText = "";
   state.resultText = "";
+  state.speakerNames = {};
+  $("#speaker-names").hidden = true;
   els.fileError.hidden = true;
   sumOutput.hidden = true;
   sumOutput.textContent = "";

@@ -73,13 +73,16 @@
         </label>
       </div>
       <div class="speaker-opts" id="speaker-opts" hidden>
-        <label>Anzahl Sprecher (falls bekannt)
-          <span class="minmax">
-            <input type="number" id="min-speakers" min="1" max="20" placeholder="min">
-            &ndash;
-            <input type="number" id="max-speakers" min="1" max="20" placeholder="max">
-          </span>
+        <label>Anzahl Sprecher
+          <select id="num-speakers">
+            <option value="" selected>Wei&szlig; ich nicht</option>
+            <option>2</option><option>3</option><option>4</option>
+            <option>5</option><option>6</option><option>7</option>
+            <option>8</option><option>9</option><option>10</option>
+            <option>11</option><option>12</option>
+          </select>
         </label>
+        <span class="muted">Die genaue Anzahl verbessert die Sprecher-Zuordnung deutlich.</span>
       </div>
     </fieldset>
 
@@ -131,6 +134,8 @@
             <option value="granite-speech-4.1-2b">2b &mdash; Standard</option>
             <option value="granite-speech-4.1-2b-plus">2b-plus &mdash; Sprecher &amp; Wort-Timestamps</option>
             <option value="granite-speech-4.1-2b-nar">2b-nar &mdash; am schnellsten</option>
+            <option value="cohere-transcribe">Cohere Transcribe &mdash; Test, keine Sprecher</option>
+            <option value="qwen3-asr">Qwen3-ASR &mdash; Test, keine Sprecher</option>
           </select>
         </label>
         <label class="check">
@@ -177,6 +182,7 @@
   <section class="card" id="card-result" hidden>
     <h2><span class="step-no">4</span> Transkript</h2>
     <div class="transcript" id="transcript" aria-live="polite"></div>
+    <div class="speaker-names" id="speaker-names" hidden></div>
     <div class="result-actions">
       <button type="button" class="btn-primary" id="btn-copy">Text kopieren</button>
       <button type="button" class="btn-primary" id="btn-dl-selected">Herunterladen (Auswahl)</button>

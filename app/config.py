@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     # Ollama instance used by /v1/summary (env GRANITE_OLLAMA_URL).
     ollama_url: str = "http://192.168.107.103:11434"
 
+    # HuggingFace token for gated models (pyannote diarization). Env
+    # GRANITE_HF_TOKEN; the account must have accepted the model conditions.
+    hf_token: str = ""
+    # pyannote pipeline used for the "pyannote" diarization engine.
+    diarization_model: str = "pyannote/speaker-diarization-community-1"
+
     # generate() repetition penalty (1.0 = off). Chunking already prevents most
     # repetition loops; raise this (e.g. 1.1-1.3) only if loops persist.
     repetition_penalty: float = 1.0

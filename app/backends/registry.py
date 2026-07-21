@@ -12,15 +12,22 @@ import logging
 import time
 
 from app.backends.base import ASRBackend
-from app.backends.granite import GraniteBackend, normalize_model_id
+from app.backends.catalog import COHERE_TRANSCRIBE, QWEN3_ASR, resolve_model_id
+from app.backends.cohere_asr import CohereTranscribeBackend
+from app.backends.granite import GraniteBackend
 from app.backends.granite_nar import GRANITE_NAR_ID, GraniteNARBackend
+from app.backends.qwen_asr import QwenASRBackend
 from app.config import settings
 
 log = logging.getLogger(__name__)
 
 
-def _is_nar(model_id: str) -> bool:
-    return model_id == GRANITE_NAR_ID
+def _backend_class(model_id: str) -> type[ASRBackend]:
+    return {
+        GRANITE_NAR_ID: GraniteNARBackend,
+        COHERE_TRANSCRIBE: CohereTranscribeBackend,
+        QWEN3_ASR: QwenASRBackend,
+    }.get(model_id, GraniteBackend)
 
 
 class BackendRegistry:
@@ -42,21 +49,16 @@ class BackendRegistry:
         return max(0.0, time.monotonic() - self._last_used)
 
     async def get(self, *, model: str | None, want_plus_features: bool) -> ASRBackend:
-        target = normalize_model_id(model, want_plus_features=want_plus_features)
+        target = resolve_model_id(model, want_plus_features=want_plus_features)
         async with self._lock:
             self._last_used = time.monotonic()
-            wants_nar = _is_nar(target)
-            current_is_nar = isinstance(self._backend, GraniteNARBackend)
-            if self._backend is not None and wants_nar != current_is_nar:
+            cls = _backend_class(target)
+            if self._backend is not None and type(self._backend) is not cls:
                 await self._backend.unload()
                 self._backend = None
 
             if self._backend is None:
-                self._backend = (
-                    GraniteNARBackend(dtype=settings.dtype)
-                    if wants_nar
-                    else GraniteBackend(dtype=settings.dtype)
-                )
+                self._backend = cls(dtype=settings.dtype)
 
             if self._backend.model_id != target:
                 await self._backend.load(target, settings.resolved_device())
