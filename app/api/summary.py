@@ -33,7 +33,12 @@ DEFAULT_SYSTEM_PROMPT = (
 
 # Embedding/reranker models are not chat-capable; vision families waste VRAM
 # on a text-only task.
-_EXCLUDE_NAME_RE = re.compile(r"embed|rerank|minilm|sentence-transformers", re.IGNORECASE)
+_EXCLUDE_NAME_RE = re.compile(
+    r"embed|rerank|minilm|sentence-transformers|coder", re.IGNORECASE
+)
+
+# Summaries need a capable general-purpose model — hide everything below this.
+_MIN_PARAMS_B = 20.0
 
 
 class SummaryIn(BaseModel):
@@ -59,9 +64,28 @@ def _is_text_model(m: dict) -> bool:
     return not _EXCLUDE_NAME_RE.search(m.get("name", ""))
 
 
+def _param_billions(m: dict) -> float | None:
+    ps = str((m.get("details") or {}).get("parameter_size") or "")
+    match = re.match(r"([\d.]+)\s*([BM])", ps, re.IGNORECASE)
+    if not match:
+        return None
+    value = float(match.group(1))
+    return value / 1000 if match.group(2).upper() == "M" else value
+
+
+def _big_enough(m: dict) -> bool:
+    billions = _param_billions(m)
+    if billions is not None:
+        return billions >= _MIN_PARAMS_B
+    # No parameter_size in the tag — approximate via blob size (q4-ish 20B).
+    return (m.get("size") or 0) >= 12_000_000_000
+
+
 def _filter_models(tags: dict) -> list[dict]:
-    """Ollama /api/tags payload -> chat-capable text models, largest first."""
-    models = [m for m in tags.get("models", []) if _is_text_model(m)]
+    """Ollama /api/tags payload -> capable text models (>=20B), largest first."""
+    models = [
+        m for m in tags.get("models", []) if _is_text_model(m) and _big_enough(m)
+    ]
     models.sort(key=lambda m: -(m.get("size") or 0))
     return [
         {

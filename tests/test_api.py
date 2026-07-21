@@ -164,6 +164,10 @@ def test_summary_filter_models() -> None:
          "details": {"family": "llama", "parameter_size": "1B"}},
         {"name": "qwen3.6:latest", "size": 24_000_000_000,
          "details": {"family": "qwen35moe", "parameter_size": "36.0B"}},
+        {"name": "qwen3-coder-next:latest", "size": 52_000_000_000,
+         "details": {"family": "qwen3moe", "parameter_size": "79.7B"}},
+        {"name": "gemma4:27b", "size": 17_000_000_000,
+         "details": {"family": "gemma4", "parameter_size": "27B"}},
         {"name": "nomic-embed-text", "size": 300_000_000,
          "details": {"family": "nomic-bert"}},
         {"name": "qwen3-vl:8b", "size": 6_000_000_000,
@@ -172,8 +176,9 @@ def test_summary_filter_models() -> None:
          "details": {"family": "bert"}},
     ]}
     models = _filter_models(tags)
-    # Embedding/reranker/vision models are dropped; largest first.
-    assert [m["name"] for m in models] == ["qwen3.6:latest", "small:1b"]
+    # Embedding/reranker/vision/coder models and everything <20B are dropped;
+    # largest first.
+    assert [m["name"] for m in models] == ["qwen3.6:latest", "gemma4:27b"]
     assert models[0]["parameter_size"] == "36.0B"
 
 

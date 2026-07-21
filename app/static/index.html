@@ -96,24 +96,6 @@
       </div>
     </fieldset>
 
-    <details class="advanced" id="sum-settings">
-      <summary>Zusammenfassung (optional, per KI-Sprachmodell)</summary>
-      <div class="adv-grid">
-        <label class="check wide">
-          <input type="checkbox" id="sum-auto">
-          Nach der Transkription automatisch zusammenfassen
-        </label>
-        <label>Modell
-          <select id="sum-model" disabled>
-            <option value="">Lade Modelle&hellip;</option>
-          </select>
-        </label>
-        <label class="wide">System-Prompt
-          <textarea id="sum-system" rows="4" maxlength="8000">Du bist ein Assistent, der Gespr&auml;chs-Transkripte zusammenfasst. Fasse das Transkript strukturiert zusammen: zuerst ein &Uuml;berblick in 3-5 S&auml;tzen, dann die wichtigsten Punkte als Stichpunkte, zuletzt offene Aufgaben und Entscheidungen, falls vorhanden. Antworte auf Deutsch.</textarea>
-        </label>
-      </div>
-    </details>
-
     <details class="advanced" id="advanced">
       <summary>Erweiterte Optionen</summary>
       <div class="adv-grid">
@@ -157,6 +139,24 @@
         </label>
         <label class="wide">Fachbegriffe / Namen (verbessert die Erkennung, kommagetrennt)
           <input type="text" id="opt-keywords" placeholder="z.&nbsp;B. Kubernetes, VR Bits, Leipzig">
+        </label>
+      </div>
+    </details>
+
+    <details class="advanced" id="sum-settings">
+      <summary>Zusammenfassung (optional, per KI-Sprachmodell)</summary>
+      <div class="adv-grid">
+        <label class="check wide">
+          <input type="checkbox" id="sum-auto">
+          Nach der Transkription automatisch zusammenfassen
+        </label>
+        <label>Modell
+          <select id="sum-model" disabled>
+            <option value="">Lade Modelle&hellip;</option>
+          </select>
+        </label>
+        <label class="wide">System-Prompt
+          <textarea id="sum-system" rows="4" maxlength="8000">Du bist ein Assistent, der Gespr&auml;chs-Transkripte zusammenfasst. Fasse das Transkript strukturiert zusammen: zuerst ein &Uuml;berblick in 3-5 S&auml;tzen, dann die wichtigsten Punkte als Stichpunkte, zuletzt offene Aufgaben und Entscheidungen, falls vorhanden. Antworte auf Deutsch.</textarea>
         </label>
       </div>
     </details>

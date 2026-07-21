@@ -191,6 +191,8 @@ fieldset.speakers legend { padding: 0; margin-bottom: 0.6rem; font-weight: 600; 
 .radio-title { font-weight: 600; }
 .radio-desc { display: block; margin-top: 0.2rem; font-size: 0.82rem; color: var(--text-2); }
 .speaker-opts { margin-top: 0.75rem; display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; }
+/* display:flex would defeat the hidden attribute */
+.speaker-opts[hidden], .speaker-names[hidden] { display: none; }
 .speaker-opts label { display: flex; align-items: center; gap: 0.75rem; font-size: 0.9rem; }
 .speaker-opts .muted { font-size: 0.8rem; }
 
