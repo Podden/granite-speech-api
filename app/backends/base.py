@@ -24,21 +24,24 @@ class ASRBackend(ABC):
         req: TranscriptionRequest,
         progress_cb: Callable[[float], None] | None = None,
         partial_cb: Callable[[str, float, float], None] | None = None,
+        delta_cb: Callable[[str], None] | None = None,
     ) -> tuple[list[TranscriptionSegment], str | None]:
         """Run inference. Returns (segments, detected_language).
 
         `progress_cb` (optional) receives percentages in [0, 100] as chunks
         complete. `partial_cb` (optional) receives (text, start, end) of each
-        finished chunk for live display. Backends without chunking may ignore
-        both.
+        finished chunk for live display. `delta_cb` (optional) receives raw
+        decoded text pieces token-by-token while a chunk is being generated.
+        Backends without chunking/streaming may ignore any of them.
         """
 
     async def transcribe_stream(
         self, req: TranscriptionRequest
     ) -> AsyncIterator[dict]:
-        """Default streaming wrapper: emits progress + partial chunk texts +
-        final segments + result. Progress/partial events are forwarded live
-        from `transcribe()`. Backends with native streaming may override.
+        """Default streaming wrapper: emits progress + token deltas + partial
+        chunk texts + final segments + result. Progress/delta/partial events
+        are forwarded live from `transcribe()`. Backends with native streaming
+        may override.
         """
         yield {"type": "progress", "progress": 0}
 
@@ -56,8 +59,18 @@ class ASRBackend(ABC):
                 {"type": "partial", "text": text, "start": start, "end": end},
             )
 
+        def on_delta(piece: str) -> None:
+            loop.call_soon_threadsafe(
+                queue.put_nowait, {"type": "delta", "text": piece}
+            )
+
         task = asyncio.create_task(
-            self.transcribe(req, progress_cb=on_progress, partial_cb=on_partial)
+            self.transcribe(
+                req,
+                progress_cb=on_progress,
+                partial_cb=on_partial,
+                delta_cb=on_delta,
+            )
         )
         while not task.done():
             getter = asyncio.ensure_future(queue.get())

@@ -191,6 +191,7 @@ class GraniteBackend(ASRBackend):
         req: TranscriptionRequest,
         progress_cb: Callable[[float], None] | None = None,
         partial_cb: Callable[[str, float, float], None] | None = None,
+        delta_cb: Callable[[str], None] | None = None,
     ) -> tuple[list[TranscriptionSegment], str | None]:
         if self._model is None:
             raise RuntimeError("Model not loaded")
@@ -218,18 +219,18 @@ class GraniteBackend(ASRBackend):
         async with self._lock:
             if want_words and want_speakers:
                 # Two-pass: word-timestamps + speakers, merge by sequential alignment.
-                # Live partials come from the first (word-timestamp) pass only.
-                words = await self._words_pass(wav, duration, req, tick, partial)
-                spk_text = await self._saa_pass(wav, duration, req, tick, None)
+                # Live partials/deltas come from the first (word-timestamp) pass only.
+                words = await self._words_pass(wav, duration, req, tick, partial, delta_cb)
+                spk_text = await self._saa_pass(wav, duration, req, tick, None, None)
                 segments = _merge_words_and_speakers(words, spk_text)
             elif want_words:
-                words = await self._words_pass(wav, duration, req, tick, partial)
+                words = await self._words_pass(wav, duration, req, tick, partial, delta_cb)
                 segments = _segments_from_words(words, fallback_end=duration)
             elif want_speakers:
-                spk_text = await self._saa_pass(wav, duration, req, tick, partial)
+                spk_text = await self._saa_pass(wav, duration, req, tick, partial, delta_cb)
                 segments = _parse_speaker_segments(spk_text, duration)
             else:
-                segments = await self._asr_pass(wav, duration, req, tick, partial)
+                segments = await self._asr_pass(wav, duration, req, tick, partial, delta_cb)
 
         language = req.language or _guess_lang(req.translate_to)
         return segments, language
@@ -241,6 +242,7 @@ class GraniteBackend(ASRBackend):
         req: TranscriptionRequest,
         tick: Callable[[float], None],
         partial: Callable[[str, float, float], None] | None = None,
+        delta_cb: Callable[[str], None] | None = None,
     ) -> list[TranscriptionSegment]:
         """Plain ASR / AST, chunked at quiet points when above the model limit."""
         prompt = self._build_prompt(
@@ -251,7 +253,8 @@ class GraniteBackend(ASRBackend):
         for t0, t1 in windows:
             piece = wav[:, int(t0 * TARGET_SR): int(t1 * TARGET_SR)]
             text = await self._run(
-                piece, prompt, max_new_tokens=_token_budget(t1 - t0, "asr")
+                piece, prompt, max_new_tokens=_token_budget(t1 - t0, "asr"),
+                delta_cb=delta_cb,
             )
             text = _collapse_repeats(text).strip()
             if text:
@@ -275,6 +278,7 @@ class GraniteBackend(ASRBackend):
         req: TranscriptionRequest,
         tick: Callable[[float], None],
         partial: Callable[[str, float, float], None] | None = None,
+        delta_cb: Callable[[str], None] | None = None,
     ) -> list[TranscriptionWord]:
         """Word-timestamp pass, chunked to the (much lower) timestamp limit."""
         prompt = self._build_prompt(
@@ -285,7 +289,8 @@ class GraniteBackend(ASRBackend):
         for t0, t1 in windows:
             piece = wav[:, int(t0 * TARGET_SR): int(t1 * TARGET_SR)]
             ts_text = await self._run(
-                piece, prompt, max_new_tokens=_token_budget(t1 - t0, "ts")
+                piece, prompt, max_new_tokens=_token_budget(t1 - t0, "ts"),
+                delta_cb=delta_cb,
             )
             chunk_words = _parse_words(_collapse_repeats(ts_text), time_offset=t0)
             words.extend(chunk_words)
@@ -301,6 +306,7 @@ class GraniteBackend(ASRBackend):
         req: TranscriptionRequest,
         tick: Callable[[float], None],
         partial: Callable[[str, float, float], None] | None = None,
+        delta_cb: Callable[[str], None] | None = None,
     ) -> str:
         """Speaker attribution via the model-card incremental decoding scheme.
 
@@ -314,7 +320,8 @@ class GraniteBackend(ASRBackend):
         )
         if duration <= CHUNK_ASR_SECONDS:
             text = await self._run(
-                wav, prompt, max_new_tokens=_token_budget(duration, "saa")
+                wav, prompt, max_new_tokens=_token_budget(duration, "saa"),
+                delta_cb=delta_cb,
             )
             text = _collapse_repeats(text)
             if partial:
@@ -337,6 +344,7 @@ class GraniteBackend(ASRBackend):
                 prompt,
                 max_new_tokens=_token_budget(t1 - t0, "saa"),
                 prefix_text=prefix or None,
+                delta_cb=delta_cb,
             )
             text = _collapse_repeats(text).strip()
             parts.append(text)
@@ -396,6 +404,7 @@ class GraniteBackend(ASRBackend):
         user_prompt: str,
         max_new_tokens: int,
         prefix_text: str | None = None,
+        delta_cb: Callable[[str], None] | None = None,
     ) -> str:
         if self._tokenizer is None:
             raise RuntimeError("Tokenizer not loaded — backend in inconsistent state")
@@ -429,21 +438,56 @@ class GraniteBackend(ASRBackend):
             inputs = processor(
                 prompt_text, wav, device=device, return_tensors="pt"
             ).to(device)
-            with torch.inference_mode():
-                outputs = model.generate(
-                    **inputs,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    num_beams=1,
-                    **gen_extra,
-                )
-            new_tokens = outputs[0, inputs["input_ids"].shape[-1]:]
-            decoded = tokenizer.decode(
-                new_tokens, add_special_tokens=False, skip_special_tokens=True
+            gen_kwargs: dict[str, Any] = dict(
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                num_beams=1,
+                **gen_extra,
             )
-            # skip_special_tokens drops registered specials, but Granite's FIM
-            # tokens (<|fim_middle|>, …) come back as literal text — strip them.
-            return _SPECIAL_TOKEN_RE.sub("", decoded)
+            if delta_cb is None:
+                with torch.inference_mode():
+                    outputs = model.generate(**inputs, **gen_kwargs)
+                new_tokens = outputs[0, inputs["input_ids"].shape[-1]:]
+                decoded = tokenizer.decode(
+                    new_tokens, add_special_tokens=False, skip_special_tokens=True
+                )
+                # skip_special_tokens drops registered specials, but Granite's
+                # FIM tokens (<|fim_middle|>, …) come back as literal text —
+                # strip them.
+                return _SPECIAL_TOKEN_RE.sub("", decoded)
+
+            # Token-level streaming: generate() runs in a side thread and feeds
+            # a TextIteratorStreamer; this thread drains it and forwards each
+            # decoded piece to delta_cb. The joined pieces are the full text.
+            import threading
+
+            from transformers import TextIteratorStreamer
+
+            streamer = TextIteratorStreamer(
+                tokenizer, skip_prompt=True, skip_special_tokens=True
+            )
+            gen_error: list[BaseException] = []
+
+            def _generate() -> None:
+                try:
+                    with torch.inference_mode():
+                        model.generate(**inputs, streamer=streamer, **gen_kwargs)
+                except BaseException as exc:  # noqa: BLE001 — re-raised below
+                    gen_error.append(exc)
+                    streamer.end()  # unblock the consumer loop
+
+            thread = threading.Thread(target=_generate, daemon=True)
+            thread.start()
+            pieces: list[str] = []
+            for piece in streamer:
+                if not piece:
+                    continue
+                pieces.append(piece)
+                delta_cb(piece)
+            thread.join()
+            if gen_error:
+                raise gen_error[0]
+            return _SPECIAL_TOKEN_RE.sub("", "".join(pieces))
 
         return await loop.run_in_executor(None, _infer)
 

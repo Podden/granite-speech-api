@@ -281,9 +281,12 @@ def _make_fake_backend():
         async def unload(self) -> None:
             pass
 
-        async def transcribe(self, req, progress_cb=None, partial_cb=None):
+        async def transcribe(self, req, progress_cb=None, partial_cb=None, delta_cb=None):
             if progress_cb:
                 progress_cb(50.0)
+            if delta_cb:
+                delta_cb("h")
+                delta_cb("i")
             if partial_cb:
                 partial_cb("hi", 0.0, 1.0)
             return (
@@ -343,5 +346,10 @@ async def test_transcribe_stream_default_wrapper_event_sequence() -> None:
     assert partial_events == [{"type": "partial", "text": "hi", "start": 0.0, "end": 1.0}]
     # Partials must arrive before the final segment events.
     assert events.index(partial_events[0]) < events.index(segment_events[0])
+
+    delta_events = [e for e in events if e["type"] == "delta"]
+    assert [e["text"] for e in delta_events] == ["h", "i"]
+    # Token deltas of a chunk arrive before that chunk's partial.
+    assert events.index(delta_events[-1]) < events.index(partial_events[0])
 
     assert events[-1] == {"type": "progress", "progress": 100}

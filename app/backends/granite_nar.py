@@ -104,6 +104,7 @@ class GraniteNARBackend(ASRBackend):
         req: TranscriptionRequest,
         progress_cb: Callable[[float], None] | None = None,  # noqa: ARG002 — single-shot
         partial_cb: Callable[[str, float, float], None] | None = None,  # noqa: ARG002
+        delta_cb: Callable[[str], None] | None = None,  # noqa: ARG002 — NAR decodes in one shot
     ) -> tuple[list[TranscriptionSegment], str | None]:
         if self._model is None:
             raise RuntimeError("Model not loaded")

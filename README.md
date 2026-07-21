@@ -202,6 +202,8 @@ curl -s --no-buffer http://localhost:8000/v1/audio/transcriptions \
 {"type":"status","stage":"loading_model","model":"ibm-granite/granite-speech-4.1-2b","cold":true}
 {"type":"status","stage":"model_ready","model":"ibm-granite/granite-speech-4.1-2b"}
 {"type":"progress","progress":0}
+{"type":"delta","text":" Hello"}
+{"type":"delta","text":" world."}
 {"type":"partial","text":"Hello world.","start":0.0,"end":1.5}
 {"type":"progress","progress":50.0}
 {"type":"segment","start":0.0,"end":1.5,"text":"Hello","speaker":"SPEAKER_00","words":[...]}
@@ -209,14 +211,16 @@ curl -s --no-buffer http://localhost:8000/v1/audio/transcriptions \
 {"type":"progress","progress":100}
 ```
 
-`status` reports (cold) model loading, `partial` streams each finished chunk's
-text live, `progress` is real per-chunk progress. Concurrent requests are
-serialized per model; requesting a different model hot-swaps after the running
-inference finishes.
+`status` reports (cold) model loading, `delta` streams raw decoded text pieces
+token-by-token while a chunk is being generated (`TextIteratorStreamer`;
+AR models only — the NAR model decodes in one shot), `partial` streams each
+finished chunk's clean text, `progress` is real per-chunk progress. Concurrent
+requests are serialized per model; requesting a different model hot-swaps after
+the running inference finishes.
 
-> Streaming is currently a wrapper around the synchronous `transcribe()` —
-> Granite's `generate()` is non-streaming. Token-level streaming via
-> `TextIteratorStreamer` is on the backlog.
+> `delta` text is the raw model output — for word-timestamp or speaker requests
+> it contains `[T:NNN]` / `[Speaker N]:` tags; clients should treat it as a
+> preview and rely on `partial`/`segment` for parsed results.
 
 ### `POST /v1/feedback` / `GET /v1/feedback`
 
@@ -367,7 +371,6 @@ HF weights, so they run fast on plain CI.
 
 ## Backlog
 
-- [ ] Real token-level streaming via `TextIteratorStreamer`.
 - [ ] Bearer-token auth (env `API_KEY`) for direct-internet exposure.
 - [ ] vLLM-backed alternative path for high-throughput production deployments.
 - [ ] Time-aligned speaker segments in SAA-only mode (currently linearly
