@@ -144,6 +144,12 @@ hot-swap + idle-unload semantics; one model in VRAM at a time):
 Neither produces word timestamps yet, so speaker attribution is rejected for
 them (400).
 
+- **`fusion`** (alias `auto`, UI default) — multi-pass pipeline: Cohere
+  Transcribe text (best punctuation) + `Qwen3-ForcedAligner-0.6B-hf` word
+  timestamps (re-mapped onto the punctuated tokens) + pyannote speaker turns.
+  The only mode that combines punctuation, capitalization, speakers and word
+  timestamps. Translation requests fall back to granite base (AST).
+
 ### Speaker diarization (pyannote)
 
 `speaker_attribution=true` now runs a dedicated diarization stage by default:
