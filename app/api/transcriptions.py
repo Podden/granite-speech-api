@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Form, HTTPException, UploadFile, File
 from fastapi.responses import PlainTextResponse, StreamingResponse
@@ -40,34 +40,126 @@ def _parse_granularities(raw: str | None) -> tuple[bool, bool]:
     return ("segment" in parts) or not parts, "word" in parts
 
 
-def _bool(v: str | bool | None) -> bool:
-    if isinstance(v, bool):
-        return v
-    if v is None:
-        return False
-    return str(v).strip().lower() in {"1", "true", "yes", "on"}
+TranslateTarget = Literal[
+    "english",
+    "french",
+    "german",
+    "spanish",
+    "portuguese",
+    "japanese",
+    "italian",
+    "mandarin",
+]
 
 
-@router.post("/v1/audio/transcriptions")
+@router.post(
+    "/v1/audio/transcriptions",
+    summary="Transcribe audio",
+    response_description=(
+        "Transcription in the requested `response_format`; NDJSON event stream "
+        "when `stream=true`."
+    ),
+)
 async def transcribe(
-    file: UploadFile = File(...),
-    model: str | None = Form(default=None),
-    language: str | None = Form(default=None),
-    response_format: str = Form(default="json"),
-    timestamp_granularities: str | None = Form(default=None, alias="timestamp_granularities[]"),
-    prompt: str | None = Form(default=None),
-    stream: str | None = Form(default=None),
-    translate: str | None = Form(default=None),
-    translate_to: str | None = Form(default=None),
-    speaker_attribution: str | None = Form(default=None),
-    min_speakers: int | None = Form(default=None),
-    max_speakers: int | None = Form(default=None),
+    file: Annotated[
+        UploadFile,
+        File(description="Audio (or video) file to transcribe: wav, mp3, ogg/opus, flac, m4a, mp4, …"),
+    ],
+    model: Annotated[
+        str | None,
+        Form(
+            description=(
+                "Granite model id (see `GET /v1/models`). Defaults to the server's "
+                "default model. Requests using `speaker_attribution` or word "
+                "timestamps auto-upgrade to `granite-speech-4.1-2b-plus`."
+            ),
+        ),
+    ] = None,
+    language: Annotated[
+        str | None,
+        Form(
+            description=(
+                "ISO-639-1 hint of the spoken language (e.g. `de`, `en`). Echoed back "
+                "in `verbose_json`; Granite does not auto-detect the language."
+            ),
+            examples=["de"],
+        ),
+    ] = None,
+    response_format: Annotated[
+        Literal["json", "text", "srt", "vtt", "verbose_json"],
+        Form(description="Output format. `verbose_json` includes segments, timestamps and speakers."),
+    ] = "json",
+    timestamp_granularities: Annotated[
+        str | None,
+        Form(
+            alias="timestamp_granularities[]",
+            description=(
+                "Timestamp detail: `segment` (default) and/or `word`. Accepts a JSON "
+                'array (`["segment","word"]`) or comma-separated string. `word` '
+                "auto-upgrades to the `-plus` model."
+            ),
+            examples=["segment,word"],
+        ),
+    ] = None,
+    prompt: Annotated[
+        str | None,
+        Form(
+            description="Comma-separated keywords for biased ASR (improves recognition of names/jargon).",
+            examples=["Kubernetes, GitOps, ArgoCD"],
+        ),
+    ] = None,
+    stream: Annotated[
+        bool,
+        Form(description="Stream the result as NDJSON events (`duration`, `progress`, `segment`, `result`)."),
+    ] = False,
+    translate: Annotated[
+        bool,
+        Form(description="Translate speech instead of transcribing (AST, `-2b` model only)."),
+    ] = False,
+    translate_to: Annotated[
+        TranslateTarget | None,
+        Form(description="Target language for speech translation. Implies `translate=true`."),
+    ] = None,
+    speaker_attribution: Annotated[
+        bool,
+        Form(
+            description=(
+                "Label segments with `[Speaker N]` (speaker diarization). "
+                "Auto-upgrades to the `-plus` model."
+            ),
+        ),
+    ] = False,
+    min_speakers: Annotated[
+        int | None,
+        Form(ge=1, description="Advisory lower bound on the number of speakers (currently reserved)."),
+    ] = None,
+    max_speakers: Annotated[
+        int | None,
+        Form(ge=1, description="Advisory upper bound on the number of speakers (currently reserved)."),
+    ] = None,
     # WhisperX-compat aliases (currently no-op or mapped):
-    diarize: str | None = Form(default=None),
-    hf_token: str | None = Form(default=None),  # noqa: ARG001 — accepted for compat
-    batch_size: int | None = Form(default=None),  # noqa: ARG001
-    compute_type: str | None = Form(default=None),  # noqa: ARG001
+    diarize: Annotated[
+        bool,
+        Form(description="WhisperX-compat alias for `speaker_attribution`."),
+    ] = False,
+    hf_token: Annotated[  # noqa: ARG001 — accepted for compat
+        str | None,
+        Form(description="WhisperX-compat, ignored (no HuggingFace token needed for diarization)."),
+    ] = None,
+    batch_size: Annotated[  # noqa: ARG001
+        int | None,
+        Form(description="WhisperX-compat, ignored."),
+    ] = None,
+    compute_type: Annotated[  # noqa: ARG001
+        str | None,
+        Form(description="WhisperX-compat, ignored."),
+    ] = None,
 ) -> Any:
+    """OpenAI-compatible transcription endpoint.
+
+    Multipart form; everything except `file` is optional. Extras over OpenAI:
+    speaker attribution, word timestamps, speech translation and NDJSON streaming.
+    """
     audio_bytes = await file.read()
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Empty audio file")
@@ -84,11 +176,15 @@ async def transcribe(
         )
 
     seg_ts, word_ts = _parse_granularities(timestamp_granularities)
-    do_diarize = _bool(speaker_attribution) or _bool(diarize)
-    do_translate = _bool(translate) or bool(translate_to)
-    do_stream = _bool(stream)
+    do_diarize = speaker_attribution or diarize
+    do_translate = translate or bool(translate_to)
+    do_stream = stream
 
-    want_plus = word_ts or do_diarize
+    # The base 2b model tends to translate non-English speech to English
+    # instead of transcribing ("wrong-language hallucination"); the -plus
+    # model transcribes the spoken language faithfully. AST still needs base.
+    non_english = bool(language) and language.strip().lower() not in {"en", "english"}
+    want_plus = word_ts or do_diarize or (non_english and not do_translate)
 
     req = TranscriptionRequest(
         audio_bytes=audio_bytes,
@@ -202,5 +298,8 @@ async def _ndjson_stream(backend, req: TranscriptionRequest, duration: float):
         yield json.dumps({"type": "duration", "duration": duration}) + "\n"
         async for event in backend.transcribe_stream(req):
             yield json.dumps(event) + "\n"
+    except Exception as exc:  # noqa: BLE001 — surface to the client, stream is already 200
+        log.exception("Streaming transcription failed")
+        yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
     finally:
         await registry.release()

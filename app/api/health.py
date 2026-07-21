@@ -9,8 +9,9 @@ from app.config import settings
 router = APIRouter()
 
 
-@router.get("/health")
+@router.get("/health", summary="Health & model status")
 async def health() -> dict:
+    """Report service status, the currently loaded model and idle-unload state."""
     idle = registry.idle_seconds
     return {
         "status": "ok",
@@ -19,5 +20,6 @@ async def health() -> dict:
         "idle_unload_seconds": settings.idle_unload_seconds,
         "device": settings.resolved_device(),
         "default_model": settings.default_model,
+        "max_audio_seconds": settings.max_audio_seconds,
         "available_models": [GRANITE_BASE, GRANITE_PLUS, GRANITE_NAR],
     }
