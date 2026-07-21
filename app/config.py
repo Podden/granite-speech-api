@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     max_audio_seconds: int = 600
     cors_origins: str = "*"
 
+    # generate() repetition penalty (1.0 = off). Chunking already prevents most
+    # repetition loops; raise this (e.g. 1.1-1.3) only if loops persist.
+    repetition_penalty: float = 1.0
+
     # Auto-unload the loaded model after this many seconds of inactivity to free
     # VRAM/RAM. Set to -1 (or 0) to disable. The check runs on a background
     # task; precision is roughly `idle_check_interval`.

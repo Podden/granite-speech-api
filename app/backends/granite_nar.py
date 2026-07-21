@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import torch
@@ -99,7 +100,9 @@ class GraniteNARBackend(ASRBackend):
             pass
 
     async def transcribe(
-        self, req: TranscriptionRequest
+        self,
+        req: TranscriptionRequest,
+        progress_cb: Callable[[float], None] | None = None,  # noqa: ARG002 — single-shot
     ) -> tuple[list[TranscriptionSegment], str | None]:
         if self._model is None:
             raise RuntimeError("Model not loaded")

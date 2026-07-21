@@ -2,16 +2,32 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
+from collections.abc import Callable
 from typing import Any
 
 import torch
 
-from app.audio import load_audio_bytes
+from app.audio import TARGET_SR, load_audio_bytes
 from app.backends.base import ASRBackend
+from app.config import settings
 from app.schema import TranscriptionRequest, TranscriptionSegment, TranscriptionWord
 
 log = logging.getLogger(__name__)
+
+# IBM: the plus model "works well with audio segments up to 9 minutes long for
+# ASR and SAA, and up to 3.5 minutes for timestamps". Longer inputs degenerate
+# into repetition loops, so anything above these bounds is chunked.
+MAX_ASR_SECONDS = 540.0
+MAX_TS_SECONDS = 210.0
+# Target chunk sizes when splitting (kept below the max so quiet-point search
+# has room to move the boundary).
+CHUNK_ASR_SECONDS = 480.0
+CHUNK_TS_SECONDS = 180.0
+# Segment size for incremental SAA decoding (model-card "Task 4" scheme:
+# cumulative audio + prefix_text keeps speaker numbering stable).
+SAA_INCREMENT_SECONDS = 240.0
 
 
 GRANITE_BASE = "ibm-granite/granite-speech-4.1-2b"
@@ -166,7 +182,9 @@ class GraniteBackend(ASRBackend):
     # ----- Inference -----
 
     async def transcribe(
-        self, req: TranscriptionRequest
+        self,
+        req: TranscriptionRequest,
+        progress_cb: Callable[[float], None] | None = None,
     ) -> tuple[list[TranscriptionSegment], str | None]:
         if self._model is None:
             raise RuntimeError("Model not loaded")
@@ -178,38 +196,132 @@ class GraniteBackend(ASRBackend):
         want_words = req.word_timestamps and is_plus
         want_speakers = req.speaker_attribution and is_plus
 
+        # Progress accounting in processed audio-seconds across all passes.
+        total_work = duration * (2 if (want_words and want_speakers) else 1)
+        done_work = 0.0
+
+        def tick(seconds: float) -> None:
+            nonlocal done_work
+            done_work += seconds
+            if progress_cb and total_work > 0:
+                progress_cb(min(99.0, done_work / total_work * 100.0))
+
         async with self._lock:
             if want_words and want_speakers:
                 # Two-pass: word-timestamps + speakers, merge by sequential alignment.
-                ts_text = await self._run(wav, self._build_prompt(
-                    word_timestamps=True, speaker_attribution=False, req=req,
-                ), max_new_tokens=10000)
-                spk_text = await self._run(wav, self._build_prompt(
-                    word_timestamps=False, speaker_attribution=True, req=req,
-                ), max_new_tokens=4000)
-                segments = _merge_words_and_speakers(ts_text, spk_text)
+                words = await self._words_pass(wav, duration, req, tick)
+                spk_text = await self._saa_pass(wav, duration, req, tick)
+                segments = _merge_words_and_speakers(words, spk_text)
             elif want_words:
-                ts_text = await self._run(wav, self._build_prompt(
-                    word_timestamps=True, speaker_attribution=False, req=req,
-                ), max_new_tokens=10000)
-                segments = _parse_word_timestamps(ts_text)
+                words = await self._words_pass(wav, duration, req, tick)
+                segments = _segments_from_words(words, fallback_end=duration)
             elif want_speakers:
-                spk_text = await self._run(wav, self._build_prompt(
-                    word_timestamps=False, speaker_attribution=True, req=req,
-                ), max_new_tokens=4000)
+                spk_text = await self._saa_pass(wav, duration, req, tick)
                 segments = _parse_speaker_segments(spk_text, duration)
             else:
-                text = await self._run(wav, self._build_prompt(
-                    word_timestamps=False, speaker_attribution=False, req=req,
-                ), max_new_tokens=2000)
-                segments = [
-                    TranscriptionSegment(
-                        id=0, start=0.0, end=duration, text=text.strip()
-                    )
-                ]
+                segments = await self._asr_pass(wav, duration, req, tick)
 
         language = req.language or _guess_lang(req.translate_to)
         return segments, language
+
+    async def _asr_pass(
+        self,
+        wav: torch.Tensor,
+        duration: float,
+        req: TranscriptionRequest,
+        tick: Callable[[float], None],
+    ) -> list[TranscriptionSegment]:
+        """Plain ASR / AST, chunked at quiet points when above the model limit."""
+        prompt = self._build_prompt(
+            word_timestamps=False, speaker_attribution=False, req=req,
+        )
+        windows = _plan_windows(wav, duration, MAX_ASR_SECONDS, CHUNK_ASR_SECONDS)
+        segments: list[TranscriptionSegment] = []
+        for t0, t1 in windows:
+            piece = wav[:, int(t0 * TARGET_SR): int(t1 * TARGET_SR)]
+            text = await self._run(
+                piece, prompt, max_new_tokens=_token_budget(t1 - t0, "asr")
+            )
+            text = _collapse_repeats(text).strip()
+            if text:
+                segments.append(
+                    TranscriptionSegment(
+                        id=len(segments), start=round(t0, 3), end=round(t1, 3),
+                        text=text,
+                    )
+                )
+            tick(t1 - t0)
+        if not segments:
+            segments = [TranscriptionSegment(id=0, start=0.0, end=duration, text="")]
+        return segments
+
+    async def _words_pass(
+        self,
+        wav: torch.Tensor,
+        duration: float,
+        req: TranscriptionRequest,
+        tick: Callable[[float], None],
+    ) -> list[TranscriptionWord]:
+        """Word-timestamp pass, chunked to the (much lower) timestamp limit."""
+        prompt = self._build_prompt(
+            word_timestamps=True, speaker_attribution=False, req=req,
+        )
+        windows = _plan_windows(wav, duration, MAX_TS_SECONDS, CHUNK_TS_SECONDS)
+        words: list[TranscriptionWord] = []
+        for t0, t1 in windows:
+            piece = wav[:, int(t0 * TARGET_SR): int(t1 * TARGET_SR)]
+            ts_text = await self._run(
+                piece, prompt, max_new_tokens=_token_budget(t1 - t0, "ts")
+            )
+            words.extend(_parse_words(_collapse_repeats(ts_text), time_offset=t0))
+            tick(t1 - t0)
+        return words
+
+    async def _saa_pass(
+        self,
+        wav: torch.Tensor,
+        duration: float,
+        req: TranscriptionRequest,
+        tick: Callable[[float], None],
+    ) -> str:
+        """Speaker attribution via the model-card incremental decoding scheme.
+
+        Audio is fed cumulatively (from the current context-block start) while
+        `prefix_text` carries the transcript decoded so far, which keeps
+        speaker numbering stable across increments. When the cumulative audio
+        would exceed the model limit, the context block is reset.
+        """
+        prompt = self._build_prompt(
+            word_timestamps=False, speaker_attribution=True, req=req,
+        )
+        if duration <= CHUNK_ASR_SECONDS:
+            text = await self._run(
+                wav, prompt, max_new_tokens=_token_budget(duration, "saa")
+            )
+            tick(duration)
+            return _collapse_repeats(text)
+
+        windows = _plan_windows(wav, duration, SAA_INCREMENT_SECONDS, SAA_INCREMENT_SECONDS)
+        parts: list[str] = []
+        block_start = 0.0
+        prefix = ""
+        for t0, t1 in windows:
+            if t1 - block_start > MAX_ASR_SECONDS:
+                log.info("SAA context block reset at %.1fs (model limit)", t0)
+                block_start = t0
+                prefix = ""
+            piece = wav[:, int(block_start * TARGET_SR): int(t1 * TARGET_SR)]
+            text = await self._run(
+                piece,
+                prompt,
+                max_new_tokens=_token_budget(t1 - t0, "saa"),
+                prefix_text=prefix or None,
+            )
+            text = _collapse_repeats(text).strip()
+            parts.append(text)
+            prefix = (prefix + " " + text).strip()
+            tick(t1 - t0)
+        return " ".join(p for p in parts if p)
 
     # ----- Internals -----
 
@@ -243,14 +355,24 @@ class GraniteBackend(ASRBackend):
                     f"<|audio|> translate the speech to {lang}. Keywords: {keywords}"
                 )
             return base
+        # Naming the spoken language stops the base model from spontaneously
+        # translating to English instead of transcribing.
+        lang_name = AST_LANGUAGES.get((req.language or "").lower())
+        speech = f"the {lang_name} speech" if lang_name else "the speech"
         if keywords:
             return (
-                f"<|audio|> transcribe the speech to text. Keywords: {keywords}"
+                f"<|audio|> transcribe {speech} to text. Keywords: {keywords}"
             )
         # Default: punctuated + capitalized ASR.
-        return "<|audio|> transcribe the speech with proper punctuation and capitalization."
+        return f"<|audio|> transcribe {speech} with proper punctuation and capitalization."
 
-    async def _run(self, wav: torch.Tensor, user_prompt: str, max_new_tokens: int) -> str:
+    async def _run(
+        self,
+        wav: torch.Tensor,
+        user_prompt: str,
+        max_new_tokens: int,
+        prefix_text: str | None = None,
+    ) -> str:
         if self._tokenizer is None:
             raise RuntimeError("Tokenizer not loaded — backend in inconsistent state")
         is_plus = self.model_id == GRANITE_PLUS
@@ -258,8 +380,11 @@ class GraniteBackend(ASRBackend):
         if is_plus:
             chat.append({"role": "system", "content": PLUS_SYSTEM_PROMPT})
         chat.append({"role": "user", "content": user_prompt})
+        # `prefix_text` (Granite chat-template kwarg) carries the already
+        # decoded transcript so the model only decodes the continuation.
+        extra = {"prefix_text": prefix_text} if prefix_text else {}
         prompt_text = self._tokenizer.apply_chat_template(
-            chat, tokenize=False, add_generation_prompt=True
+            chat, tokenize=False, add_generation_prompt=True, **extra
         )
 
         loop = asyncio.get_running_loop()
@@ -272,6 +397,10 @@ class GraniteBackend(ASRBackend):
         model = self._model
         device = self._device
 
+        gen_extra: dict[str, Any] = {}
+        if settings.repetition_penalty != 1.0:
+            gen_extra["repetition_penalty"] = settings.repetition_penalty
+
         def _infer() -> str:
             inputs = processor(
                 prompt_text, wav, device=device, return_tensors="pt"
@@ -282,6 +411,7 @@ class GraniteBackend(ASRBackend):
                     max_new_tokens=max_new_tokens,
                     do_sample=False,
                     num_beams=1,
+                    **gen_extra,
                 )
             new_tokens = outputs[0, inputs["input_ids"].shape[-1]:]
             return tokenizer.decode(
@@ -289,6 +419,76 @@ class GraniteBackend(ASRBackend):
             )
 
         return await loop.run_in_executor(None, _infer)
+
+
+# ----- Chunking helpers -----
+
+
+def _plan_windows(
+    wav: torch.Tensor, duration: float, limit: float, target: float
+) -> list[tuple[float, float]]:
+    """Split `duration` into windows <= `limit`, cutting at quiet points.
+
+    Returns [(start, end), ...]; a single full-length window when the audio
+    already fits the limit.
+    """
+    if duration <= limit:
+        return [(0.0, duration)]
+    n = math.ceil(duration / target)
+    step = duration / n
+    bounds = [0.0]
+    bounds += [_quiet_point(wav, step * i, radius=10.0) for i in range(1, n)]
+    bounds.append(duration)
+    return [(a, b) for a, b in zip(bounds, bounds[1:]) if b - a > 0.05]
+
+
+def _quiet_point(wav: torch.Tensor, t: float, radius: float) -> float:
+    """Return the lowest-energy time within +-radius of `t` (avoid mid-word cuts)."""
+    lo = max(0, int((t - radius) * TARGET_SR))
+    hi = min(wav.shape[-1], int((t + radius) * TARGET_SR))
+    frame = int(0.1 * TARGET_SR)
+    n = (hi - lo) // frame
+    if n < 2:
+        return t
+    window = wav[0, lo: lo + n * frame]
+    energy = window.reshape(n, frame).abs().mean(dim=1)
+    idx = int(energy.argmin())
+    return (lo + idx * frame + frame // 2) / TARGET_SR
+
+
+def _token_budget(seconds: float, task: str) -> int:
+    """Upper bound on generated tokens for a chunk — also caps runaway loops."""
+    rate = {"asr": 12, "saa": 15, "ts": 30}[task]
+    return max(256, int(seconds * rate) + 128)
+
+
+def _collapse_repeats(text: str, max_run: int = 4) -> str:
+    """Collapse degenerate repetition loops (same 1-4 gram repeated endlessly)."""
+    tokens = text.split()
+    out: list[str] = []
+    i = 0
+    while i < len(tokens):
+        collapsed = False
+        for n in (1, 2, 3, 4):
+            gram = tokens[i: i + n]
+            if len(gram) < n:
+                continue
+            reps = 1
+            while tokens[i + reps * n: i + (reps + 1) * n] == gram:
+                reps += 1
+            if reps > max_run:
+                out.extend(gram)
+                log.warning(
+                    "Collapsed %d consecutive repetitions of %r in model output",
+                    reps, " ".join(gram),
+                )
+                i += reps * n
+                collapsed = True
+                break
+        if not collapsed:
+            out.append(tokens[i])
+            i += 1
+    return " ".join(out)
 
 
 # ----- Output parsing helpers -----
@@ -308,17 +508,18 @@ def _decode_centiseconds(centi: int, last_end: float, offset: float) -> tuple[fl
     return end + offset, offset
 
 
-def _parse_word_timestamps(text: str) -> list[TranscriptionSegment]:
-    """Parse output of the word-timestamps prompt.
+def _parse_words(text: str, time_offset: float = 0.0) -> list[TranscriptionWord]:
+    """Parse word-timestamp output (`hello [T:45] world [T:82]`) into words.
 
-    The model emits e.g. `hello [T:45] world [T:82]`. Silences are encoded as `_`.
+    Tags are centiseconds modulo 1000 relative to the chunk start;
+    `time_offset` shifts them to absolute time. Silences are encoded as `_`.
     """
     parts = _TS_RE.split(text)
     # parts = [word0, ts0, word1, ts1, ..., trailing]
     words: list[TranscriptionWord] = []
-    last_end = 0.0
-    offset = 0.0
-    word_start = 0.0
+    last_end = time_offset
+    offset = time_offset
+    word_start = time_offset
     for word, ts in zip(parts[::2], parts[1::2]):
         token = word.strip()
         if not token:
@@ -334,20 +535,31 @@ def _parse_word_timestamps(text: str) -> list[TranscriptionSegment]:
             )
         word_start = end
         last_end = end
+    return words
 
+
+def _segments_from_words(
+    words: list[TranscriptionWord], fallback_end: float
+) -> list[TranscriptionSegment]:
     if not words:
-        return [TranscriptionSegment(id=0, start=0.0, end=0.0, text=text.strip())]
-
-    seg_text = " ".join(w.word for w in words)
+        return [TranscriptionSegment(id=0, start=0.0, end=fallback_end, text="")]
     return [
         TranscriptionSegment(
             id=0,
             start=words[0].start,
             end=words[-1].end,
-            text=seg_text,
+            text=" ".join(w.word for w in words),
             words=words,
         )
     ]
+
+
+def _parse_word_timestamps(text: str) -> list[TranscriptionSegment]:
+    """Parse a single word-timestamps output into one segment (test/back-compat)."""
+    words = _parse_words(text)
+    if not words:
+        return [TranscriptionSegment(id=0, start=0.0, end=0.0, text=text.strip())]
+    return _segments_from_words(words, fallback_end=words[-1].end)
 
 
 def _parse_speaker_segments(text: str, duration: float) -> list[TranscriptionSegment]:
@@ -399,22 +611,23 @@ def _parse_speaker_segments(text: str, duration: float) -> list[TranscriptionSeg
     return segments
 
 
-def _merge_words_and_speakers(ts_text: str, spk_text: str) -> list[TranscriptionSegment]:
-    """Combine outputs from a word-timestamp pass and a speaker-attribution pass.
+def _merge_words_and_speakers(
+    ts_words: list[TranscriptionWord] | str, spk_text: str
+) -> list[TranscriptionSegment]:
+    """Combine a word-timestamp pass (parsed words) with a speaker-attribution pass.
 
-    Strategy: parse word-timestamps to get [(word, start, end)] and parse
-    speaker turns to get [(speaker, [tokens])]. Then walk the speaker turn
-    word stream and the timestamp word stream in lock-step, assigning each
-    timestamp word the speaker label of the corresponding turn position.
-    Mismatches are absorbed by advancing the timestamp index without
-    advancing speakers — best-effort, but produces a coherent transcript.
+    Strategy: walk the speaker-turn word stream and the timestamp word stream
+    in lock-step, assigning each timestamp word the speaker label of the
+    corresponding turn position. Mismatches are absorbed by advancing the
+    timestamp index without advancing speakers — best-effort, but produces a
+    coherent transcript.
     """
-    ts_segments = _parse_word_timestamps(ts_text)
-    if not ts_segments or not ts_segments[0].words:
-        return ts_segments
+    if isinstance(ts_words, str):  # convenience for raw single-chunk output
+        ts_words = _parse_words(ts_words)
+    if not ts_words:
+        return [TranscriptionSegment(id=0, start=0.0, end=0.0, text=spk_text.strip())]
 
-    ts_words = ts_segments[0].words
-    duration = ts_segments[0].end
+    duration = ts_words[-1].end
 
     # Build speaker turns: list of (speaker_label, list_of_tokens).
     parts = re.split(r"(\[Speaker\s+\d+\]\s*:)", spk_text)
@@ -460,9 +673,6 @@ def _merge_words_and_speakers(ts_text: str, spk_text: str) -> list[Transcription
 
     # Build per-speaker segments from contiguous runs of words with the same speaker.
     segments: list[TranscriptionSegment] = []
-    if not ts_words:
-        return ts_segments
-
     run: list[TranscriptionWord] = []
 
     def flush_run() -> None:
@@ -488,7 +698,5 @@ def _merge_words_and_speakers(ts_text: str, spk_text: str) -> list[Transcription
     flush_run()
 
     if not segments:
-        segments = ts_segments
-        for s in segments:
-            s.end = duration
+        segments = _segments_from_words(ts_words, fallback_end=duration)
     return segments

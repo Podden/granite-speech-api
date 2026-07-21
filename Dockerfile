@@ -9,8 +9,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # uv for fast installs
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
+# gcc: triton JIT-compiles its CUDA driver stub at runtime (torch native ops
+# route e.g. RoPE matmuls through triton kernels) and needs a C compiler.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libsndfile1 ffmpeg ca-certificates && \
+        libsndfile1 ffmpeg ca-certificates gcc libc6-dev && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
