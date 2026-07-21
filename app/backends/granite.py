@@ -29,6 +29,11 @@ CHUNK_TS_SECONDS = 180.0
 # cumulative audio + prefix_text keeps speaker numbering stable).
 SAA_INCREMENT_SECONDS = 240.0
 
+# Matches any <|...|> special-token artifact the model occasionally emits as
+# literal text (e.g. <|fim_middle|>). These are not real transcription and break
+# downstream tiktoken-based consumers, so we strip them from decoded output.
+_SPECIAL_TOKEN_RE = re.compile(r"<\|[^|>]*\|>")
+
 
 GRANITE_BASE = "ibm-granite/granite-speech-4.1-2b"
 GRANITE_PLUS = "ibm-granite/granite-speech-4.1-2b-plus"
@@ -192,7 +197,6 @@ class GraniteBackend(ASRBackend):
         wav, duration = load_audio_bytes(req.audio_bytes)
 
         is_plus = self.model_id == GRANITE_PLUS
-
         want_words = req.word_timestamps and is_plus
         want_speakers = req.speaker_attribution and is_plus
 
@@ -337,9 +341,10 @@ class GraniteBackend(ASRBackend):
 
         if speaker_attribution and is_plus:
             return (
-                "<|audio|> Speaker attribution: Transcribe and denote who is "
-                "speaking by adding [Speaker 1]: and [Speaker 2]: tags before "
-                "speaker turns."
+                "<|audio|> Speaker attribution: Transcribe the speech and label "
+                "each speaker turn with a [Speaker N]: tag (e.g. [Speaker 1]:, "
+                "[Speaker 2]:, [Speaker 3]:), assigning a new number to each "
+                "distinct speaker you hear."
             )
         if word_timestamps and is_plus:
             return (
@@ -414,9 +419,12 @@ class GraniteBackend(ASRBackend):
                     **gen_extra,
                 )
             new_tokens = outputs[0, inputs["input_ids"].shape[-1]:]
-            return tokenizer.decode(
+            decoded = tokenizer.decode(
                 new_tokens, add_special_tokens=False, skip_special_tokens=True
             )
+            # skip_special_tokens drops registered specials, but Granite's FIM
+            # tokens (<|fim_middle|>, …) come back as literal text — strip them.
+            return _SPECIAL_TOKEN_RE.sub("", decoded)
 
         return await loop.run_in_executor(None, _infer)
 
@@ -562,13 +570,19 @@ def _parse_word_timestamps(text: str) -> list[TranscriptionSegment]:
     return _segments_from_words(words, fallback_end=words[-1].end)
 
 
-def _parse_speaker_segments(text: str, duration: float) -> list[TranscriptionSegment]:
-    """Parse output of the speaker-attribution prompt: `[Speaker N]: text...`."""
+def _parse_speaker_segments(
+    text: str, duration: float, initial_speaker: str | None = None
+) -> list[TranscriptionSegment]:
+    """Parse output of the speaker-attribution prompt: `[Speaker N]: text...`.
+
+    `initial_speaker` seeds the speaker for any leading text before the first
+    tag (text continuing the previous chunk's final speaker turn).
+    """
     # Split on speaker tags but keep them.
     parts = re.split(r"(\[Speaker\s+\d+\]\s*:)", text)
     # parts may start with leading text before any tag — treat as Speaker 1 fallback.
     segments: list[TranscriptionSegment] = []
-    current_speaker: str | None = None
+    current_speaker: str | None = initial_speaker
     buf: list[str] = []
 
     def flush() -> None:

@@ -21,7 +21,9 @@ class Settings(BaseSettings):
     device: Literal["auto", "cuda", "cpu"] | str = "auto"
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
-    max_audio_seconds: int = 600
+    max_audio_seconds: int = 6000
+    # Max upload size in bytes (default 200 MB)
+    max_upload_bytes: int = 200 * 1024 * 1024
     cors_origins: str = "*"
 
     # generate() repetition penalty (1.0 = off). Chunking already prevents most
