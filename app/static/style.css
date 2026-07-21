@@ -374,3 +374,42 @@ footer {
   color: var(--text-2);
 }
 footer a { color: var(--accent); }
+
+/* ── Zusammenfassung (Ollama) ───────────────────────────── */
+.summary-box { margin-top: 1.25rem; border: 1px solid var(--border); }
+.summary-box > summary {
+  padding: 0.6rem 1rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+  user-select: none;
+}
+.summary-box > summary .muted { font-weight: 400; color: var(--text-2); }
+.summary-box[open] > summary { border-bottom: 1px solid var(--border); }
+.sum-controls {
+  display: flex; align-items: flex-end; gap: 1rem; flex-wrap: wrap;
+  padding: 1rem 1rem 0;
+}
+.sum-controls label {
+  display: flex; flex-direction: column; gap: 0.3rem;
+  font-size: 0.85rem; color: var(--text-2);
+  flex: 1; min-width: 240px;
+}
+.sum-prompt { margin: 0.75rem 1rem 0; }
+.sum-prompt summary { cursor: pointer; font-size: 0.85rem; color: var(--text-2); user-select: none; }
+.sum-prompt textarea {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 0.5rem;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--layer-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 0;
+  padding: 0.45rem 0.6rem;
+  resize: vertical;
+}
+.sum-output { margin: 1rem; max-height: 20rem; }
+.summary-box .result-actions { padding: 0 1rem 1rem; margin-top: 0.75rem; }
+#card-result.batch-mode #summary-box { display: none; }

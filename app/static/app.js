@@ -45,6 +45,7 @@ const state = {
   xhr: null,
   segments: [],
   partials: [],
+  liveText: "",       // token stream of the chunk currently being decoded
   resultText: "",
   words: [],
   startedAt: 0,
@@ -144,7 +145,7 @@ async function onFileSelected(file) {
     state.peaks = computePeaks(mono, 600);
     drawWaveform(0);
 
-    // Smallest upload wins: Opus (~32 kbit/s, WebCodecs) → original audio
+    // Smallest upload wins: Opus (48 kbit/s, WebCodecs) → original audio
     // file → 16 kHz mono WAV as universal fallback.
     const base = file.name.replace(/\.[^.]+$/, "");
     const wav = encodeWav(mono, audio.sampleRate);
@@ -153,7 +154,7 @@ async function onFileSelected(file) {
       try {
         const ogg = await encodeOggOpus(mono, audio.sampleRate);
         if (ogg.size < upload.blob.size) {
-          upload = { blob: ogg, name: base + ".ogg", label: "Opus 32 kbit/s" };
+          upload = { blob: ogg, name: base + ".ogg", label: "Opus 48 kbit/s" };
         }
       } catch (err) {
         log(`Opus-Kompression fehlgeschlagen (${err.message}) — nutze WAV.`, "warn");
@@ -507,6 +508,7 @@ function beginTranscription() {
   state.startedAt = Date.now();
   state.segments = [];
   state.partials = [];
+  state.liveText = "";
   state.words = [];
   state.resultText = "";
 
@@ -585,7 +587,14 @@ function handleEvent(line) {
       log(`Fortschritt: ${Math.round(pct)} %`);
       break;
     }
+    case "delta":
+      // Token-level live text of the chunk currently being decoded.
+      state.liveText += ev.text;
+      scheduleLiveRender();
+      break;
     case "partial":
+      // Chunk finished — its clean text replaces the raw token stream.
+      state.liveText = "";
       state.partials.push(ev);
       if (els.cardResult.hidden) els.cardResult.hidden = false;
       renderTranscript();
@@ -628,6 +637,7 @@ function onRequestDone(xhr) {
   els.btnCancel.hidden = true;
   els.btnStart.disabled = false;
   els.cardResult.hidden = false;
+  state.liveText = "";
   renderTranscript();
   log(`Transkription abgeschlossen in ${secs} s (${state.segments.length} Segmente).`);
   els.cardResult.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -662,6 +672,18 @@ function cancelTranscription() {
 }
 
 /* ── Result rendering & export ──────────────────────────── */
+
+/* Deltas arrive at token rate — repaint at most ~8x/s. */
+let liveRenderTimer = 0;
+
+function scheduleLiveRender() {
+  if (liveRenderTimer) return;
+  liveRenderTimer = setTimeout(() => {
+    liveRenderTimer = 0;
+    if (els.cardResult.hidden) els.cardResult.hidden = false;
+    renderTranscript();
+  }, 120);
+}
 
 function speakerLabel(spk) {
   const m = /(\d+)/.exec(spk || "");
@@ -704,12 +726,16 @@ function renderTranscript() {
         el.appendChild(document.createTextNode((seg.text || "").trim() + " "));
       }
     }
-  } else if (state.partials.length) {
-    // Live preview while the server is still transcribing; speaker tags in
-    // raw model output become readable labels.
-    const text = state.partials.map((p) => p.text).join(" ")
+  } else if (state.partials.length || state.liveText) {
+    // Live preview while the server is still transcribing: finished chunks +
+    // the raw token stream of the current chunk. Model tags become readable
+    // labels; timestamp tags and silence markers are hidden.
+    const text = (state.partials.map((p) => p.text).join(" ") + " " + state.liveText)
+      .replace(/<\|[^|>]*\|>/g, "")
+      .replace(/\[T:\d*\]?/g, "")
+      .replace(/(^|\s)_(?=\s|$)/g, " ")
       .replace(/\[Speaker\s+(\d+)\]\s*:/g, (_, n) => `\n[Sprecher ${n}] `);
-    el.textContent = text.trim() + " …";
+    el.textContent = text.replace(/[ \t]+/g, " ").trim() + " ▌";
   } else {
     el.textContent = state.resultText;
   }
@@ -789,8 +815,120 @@ function resetResult() {
   els.transcript.textContent = "";
   state.segments = [];
   state.partials = [];
+  state.liveText = "";
   state.resultText = "";
   els.fileError.hidden = true;
+  sumOutput.hidden = true;
+  sumOutput.textContent = "";
+  $("#sum-actions").hidden = true;
+}
+
+/* ── Zusammenfassung (Ollama) ───────────────────────────── */
+
+const sumModel = $("#sum-model");
+const btnSummarize = $("#btn-summarize");
+const sumOutput = $("#summary-output");
+let summarizing = false;
+
+async function loadSummaryModels() {
+  try {
+    const res = await fetch("/v1/summary/models");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    sumModel.textContent = "";
+    for (const m of data.models) {
+      const o = document.createElement("option");
+      o.value = m.name;
+      o.textContent = m.parameter_size ? `${m.name} (${m.parameter_size})` : m.name;
+      sumModel.appendChild(o);
+    }
+    if (data.models.length) {
+      sumModel.disabled = false;
+      btnSummarize.disabled = false;
+      log(`Ollama verbunden: ${data.models.length} Modelle für Zusammenfassungen.`);
+    } else {
+      sumModel.options[0] = new Option("Keine Modelle gefunden", "");
+    }
+  } catch (err) {
+    sumModel.textContent = "";
+    sumModel.appendChild(new Option("Ollama nicht erreichbar", ""));
+    log(`Zusammenfassung nicht verfügbar: ${err.message}`, "warn");
+  }
+}
+
+async function runSummary() {
+  const text = plainText();
+  if (!text.trim()) { log("Kein Transkript zum Zusammenfassen vorhanden.", "warn"); return; }
+  if (!sumModel.value || summarizing) return;
+  summarizing = true;
+  btnSummarize.disabled = true;
+  btnSummarize.textContent = "Fasst zusammen…";
+  sumOutput.hidden = false;
+  sumOutput.textContent = "";
+  $("#sum-actions").hidden = true;
+  $("#sum-stats").textContent = "";
+  let raw = "";
+  let thinkChars = 0;
+  log(`Zusammenfassung gestartet (${sumModel.value}, ${text.length} Zeichen Transkript).`);
+  sumOutput.textContent = "(Modell wird geladen…)";
+  try {
+    const res = await fetch("/v1/summary", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        model: sumModel.value,
+        system_prompt: $("#sum-system").value.trim() || null,
+      }),
+    });
+    if (!res.ok || !res.body) {
+      let msg = `HTTP ${res.status}`;
+      try { msg = (await res.json()).detail || msg; } catch { /* keep */ }
+      throw new Error(msg);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    let failed = null;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let ev;
+        try { ev = JSON.parse(line); } catch { continue; }
+        if (ev.type === "delta") {
+          raw += ev.text;
+          // Reasoning models wrap their thinking in <think>…</think> — hide it.
+          const visible = raw.replace(/<think>[\s\S]*?(<\/think>|$)/, "").trimStart();
+          sumOutput.textContent = visible || "(Modell denkt nach…)";
+          sumOutput.scrollTop = sumOutput.scrollHeight;
+        } else if (ev.type === "thinking") {
+          thinkChars += ev.text.length;
+          if (!raw) sumOutput.textContent = `(Modell denkt nach… ${thinkChars} Zeichen)`;
+        } else if (ev.type === "done") {
+          $("#sum-actions").hidden = false;
+          $("#sum-stats").textContent =
+            (ev.duration_seconds ? `${ev.duration_seconds} s · ` : "") + (ev.model || "");
+          log(`Zusammenfassung fertig (${ev.eval_count ?? "?"} Tokens, ${ev.duration_seconds ?? "?"} s).`);
+        } else if (ev.type === "error") {
+          failed = ev.message;
+        }
+      }
+    }
+    if (failed) throw new Error(failed);
+  } catch (err) {
+    sumOutput.hidden = false;
+    sumOutput.textContent += `\n[Fehler: ${err.message}]`;
+    log(`Zusammenfassung fehlgeschlagen: ${err.message}`, "err");
+  } finally {
+    summarizing = false;
+    btnSummarize.disabled = !sumModel.value;
+    btnSummarize.textContent = "Zusammenfassen";
+  }
 }
 
 /* ── Aktions-Trace (für nachvollziehbare Bug-Reports) ───── */
@@ -1066,6 +1204,15 @@ document.querySelectorAll(".fb-rate").forEach((b) =>
   })
 );
 $("#fb-send").addEventListener("click", sendFeedback);
+btnSummarize.addEventListener("click", () => {
+  runSummary().catch((e) => log(`Zusammenfassung: ${e.message}`, "err"));
+});
+$("#btn-sum-copy").addEventListener("click", async () => {
+  await navigator.clipboard.writeText(sumOutput.textContent);
+  $("#btn-sum-copy").textContent = "Kopiert ✓";
+  setTimeout(() => { $("#btn-sum-copy").textContent = "Zusammenfassung kopieren"; }, 1500);
+});
+loadSummaryModels();
 
 refreshHealth();
 setInterval(refreshHealth, 30000);

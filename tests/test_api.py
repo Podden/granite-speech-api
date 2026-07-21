@@ -156,6 +156,100 @@ def test_feedback_without_rating(client: TestClient, tmp_path, monkeypatch) -> N
     assert entry["category"] == "feature"
 
 
+def test_summary_filter_models() -> None:
+    from app.api.summary import _filter_models
+
+    tags = {"models": [
+        {"name": "small:1b", "size": 1_000_000_000,
+         "details": {"family": "llama", "parameter_size": "1B"}},
+        {"name": "qwen3.6:latest", "size": 24_000_000_000,
+         "details": {"family": "qwen35moe", "parameter_size": "36.0B"}},
+        {"name": "nomic-embed-text", "size": 300_000_000,
+         "details": {"family": "nomic-bert"}},
+        {"name": "qwen3-vl:8b", "size": 6_000_000_000,
+         "details": {"family": "qwen3vl"}},
+        {"name": "xitao/bge-reranker-v2-m3", "size": 1_200_000_000,
+         "details": {"family": "bert"}},
+    ]}
+    models = _filter_models(tags)
+    # Embedding/reranker/vision models are dropped; largest first.
+    assert [m["name"] for m in models] == ["qwen3.6:latest", "small:1b"]
+    assert models[0]["parameter_size"] == "36.0B"
+
+
+def test_summary_models_endpoint(client: TestClient, monkeypatch) -> None:
+    import app.api.summary as summary
+
+    monkeypatch.setattr(summary, "_fetch_tags", lambda: {"models": [
+        {"name": "big:30b", "size": 20, "details": {"family": "llama", "parameter_size": "30B"}},
+    ]})
+    r = client.get("/v1/summary/models")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["models"][0]["name"] == "big:30b"
+    assert "default_system_prompt" in body
+
+
+def test_summary_models_endpoint_ollama_down(client: TestClient, monkeypatch) -> None:
+    import app.api.summary as summary
+
+    def _boom() -> dict:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(summary, "_fetch_tags", _boom)
+    r = client.get("/v1/summary/models")
+    assert r.status_code == 502
+
+
+def test_summary_stream(client: TestClient, monkeypatch) -> None:
+    import json
+
+    import app.api.summary as summary
+
+    def fake_stream(payload):
+        assert payload["model"] == "big:30b"
+        assert payload["messages"][0]["role"] == "system"
+        assert payload["messages"][1]["content"] == "hallo welt"
+        yield json.dumps({"message": {"thinking": "hmm"}, "done": False}).encode() + b"\n"
+        yield json.dumps({"message": {"content": "Zus"}, "done": False}).encode() + b"\n"
+        yield json.dumps({"message": {"content": "ammenfassung."}, "done": False}).encode() + b"\n"
+        yield json.dumps({
+            "message": {"content": ""}, "done": True, "model": "big:30b",
+            "eval_count": 5, "total_duration": 2_000_000_000,
+        }).encode() + b"\n"
+
+    monkeypatch.setattr(summary, "_open_chat_stream", fake_stream)
+    r = client.post("/v1/summary", json={"text": "hallo welt", "model": "big:30b"})
+    assert r.status_code == 200
+    events = [json.loads(line) for line in r.text.strip().splitlines()]
+    deltas = [e["text"] for e in events if e["type"] == "delta"]
+    assert "".join(deltas) == "Zusammenfassung."
+    assert [e["text"] for e in events if e["type"] == "thinking"] == ["hmm"]
+    done = [e for e in events if e["type"] == "done"]
+    assert done and done[0]["eval_count"] == 5
+    assert done[0]["duration_seconds"] == 2.0
+
+
+def test_summary_stream_forwards_ollama_error(client: TestClient, monkeypatch) -> None:
+    import json
+
+    import app.api.summary as summary
+
+    def fake_stream(payload):  # noqa: ARG001
+        yield json.dumps({"error": "model not found"}).encode() + b"\n"
+
+    monkeypatch.setattr(summary, "_open_chat_stream", fake_stream)
+    r = client.post("/v1/summary", json={"text": "x", "model": "nope"})
+    events = [json.loads(line) for line in r.text.strip().splitlines()]
+    assert events == [{"type": "error", "message": "model not found"}]
+
+
+def test_summary_requires_text_and_model(client: TestClient) -> None:
+    assert client.post("/v1/summary", json={"model": "x"}).status_code == 422
+    assert client.post("/v1/summary", json={"text": "x"}).status_code == 422
+    assert client.post("/v1/summary", json={"text": "", "model": "x"}).status_code == 422
+
+
 def test_job_tracker() -> None:
     from app.jobs import JobTracker
 

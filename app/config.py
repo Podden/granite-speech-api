@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     # Append-only JSONL file for user feedback (mounted volume in Docker).
     feedback_file: str = "feedback.jsonl"
 
+    # Ollama instance used by /v1/summary (env GRANITE_OLLAMA_URL).
+    ollama_url: str = "http://192.168.107.103:11434"
+
     # generate() repetition penalty (1.0 = off). Chunking already prevents most
     # repetition loops; raise this (e.g. 1.1-1.3) only if loops persist.
     repetition_penalty: float = 1.0
