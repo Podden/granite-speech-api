@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 200 * 1024 * 1024
     cors_origins: str = "*"
 
+    # Append-only JSONL file for user feedback (mounted volume in Docker).
+    feedback_file: str = "feedback.jsonl"
+
     # generate() repetition penalty (1.0 = off). Chunking already prevents most
     # repetition loops; raise this (e.g. 1.1-1.3) only if loops persist.
     repetition_penalty: float = 1.0

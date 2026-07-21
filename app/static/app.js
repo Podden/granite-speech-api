@@ -398,6 +398,7 @@ function onRequestDone(xhr) {
     return;
   }
   const secs = Math.round((Date.now() - state.startedAt) / 1000);
+  state.processingSecs = secs;
   setPhase("done", "Fertig.", `${secs} s gesamt`);
   setStep("done", "done");
   setProgress(100, false);
@@ -532,6 +533,58 @@ function resetResult() {
   state.segments = [];
   state.resultText = "";
   els.fileError.hidden = true;
+  resetFeedback();
+}
+
+/* ── Feedback ───────────────────────────────────────────── */
+
+let fbRating = null;
+
+function resetFeedback() {
+  fbRating = null;
+  $("#fb-detail").hidden = true;
+  $("#fb-thanks").hidden = true;
+  document.querySelectorAll(".fb-rate").forEach((b) => {
+    b.classList.remove("selected");
+    b.disabled = false;
+  });
+  $("#fb-comment").value = "";
+}
+
+async function sendFeedback() {
+  const settingsUsed = {
+    speakers: document.querySelector('input[name="speakers"]:checked').value,
+    language: $("#opt-language").value || null,
+    model: $("#opt-model").value || null,
+    word_timestamps: $("#opt-word-ts").checked,
+    translate_to: $("#opt-translate").value || null,
+  };
+  const body = {
+    rating: fbRating,
+    comment: $("#fb-comment").value.trim() || null,
+    context: {
+      filename: state.file?.name || null,
+      duration_seconds: state.duration ? Math.round(state.duration) : null,
+      upload_bytes: state.uploadBlob?.size || null,
+      processing_seconds: state.processingSecs ?? null,
+      segments: state.segments.length,
+      settings: settingsUsed,
+    },
+  };
+  try {
+    const res = await fetch("/v1/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    $("#fb-detail").hidden = true;
+    $("#fb-thanks").hidden = false;
+    document.querySelectorAll(".fb-rate").forEach((b) => { b.disabled = true; });
+    log(`Feedback gesendet (${fbRating}).`);
+  } catch (err) {
+    log(`Feedback senden fehlgeschlagen: ${err.message}`, "err");
+  }
 }
 
 function resetFile() {
@@ -587,6 +640,15 @@ $("#btn-copy").addEventListener("click", async () => {
 document.querySelectorAll(".dl").forEach((b) =>
   b.addEventListener("click", () => download(b.dataset.fmt))
 );
+document.querySelectorAll(".fb-rate").forEach((b) =>
+  b.addEventListener("click", () => {
+    fbRating = b.dataset.rating;
+    document.querySelectorAll(".fb-rate").forEach((x) => x.classList.toggle("selected", x === b));
+    $("#fb-detail").hidden = false;
+    $("#fb-thanks").hidden = true;
+  })
+);
+$("#fb-send").addEventListener("click", sendFeedback);
 
 refreshHealth();
 setInterval(refreshHealth, 30000);

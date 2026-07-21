@@ -33,3 +33,4 @@ models/
 Thumbs.db
 
 .playwright-mcp/
+feedback.jsonl

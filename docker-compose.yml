@@ -23,8 +23,10 @@ services:
       GRANITE_CORS_ORIGINS: ${GRANITE_CORS_ORIGINS:-*}
       HF_HOME: /data/hf-cache
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+      GRANITE_FEEDBACK_FILE: /data/feedback/feedback.jsonl
     volumes:
       - hf-cache:/data/hf-cache
+      - feedback:/data/feedback
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/health', timeout=5); sys.exit(0)"]
       interval: 30s
@@ -34,4 +36,6 @@ services:
 
 volumes:
   hf-cache:
+    driver: local
+  feedback:
     driver: local

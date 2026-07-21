@@ -12,7 +12,8 @@ served natively by `granite-speech-4.1-2b-plus`.
 
 - **Browser upload UI** at `/` (served from `app/static/`): drag & drop audio/video,
   client-side audio extraction from video (Web Audio API, no video bytes uploaded),
-  single/multi-speaker mode, live progress, txt/srt/vtt/json export, log panel.
+  single/multi-speaker mode, live progress, txt/srt/vtt/json export, log panel,
+  thumbs-up/down feedback (stored as JSONL, see `/v1/feedback`).
 - **OpenAI-compatible** `POST /v1/audio/transcriptions` (multipart-form, all standard fields).
 - **Long-audio chunking**: audio beyond the model limits (9 min ASR/SAA, 3.5 min
   word timestamps) is split at quiet points; SAA uses the model-card incremental
@@ -204,6 +205,13 @@ curl -s --no-buffer http://localhost:8000/v1/audio/transcriptions \
 > Streaming is currently a wrapper around the synchronous `transcribe()` —
 > Granite's `generate()` is non-streaming. Token-level streaming via
 > `TextIteratorStreamer` is on the backlog.
+
+### `POST /v1/feedback` / `GET /v1/feedback`
+
+Minimal user-feedback capture for the browser UI (thumbs up/down + optional
+comment + request context). Entries are appended to a JSONL file
+(`GRANITE_FEEDBACK_FILE`, a named volume in Docker); `GET /v1/feedback?limit=50`
+returns the newest entries. No auth — intended for internal/LAN use only.
 
 ### `GET /v1/models`
 

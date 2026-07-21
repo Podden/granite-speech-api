@@ -110,3 +110,33 @@ def test_transcriptions_rejects_empty(client: TestClient) -> None:
         files={"file": ("empty.wav", b"", "audio/wav")},
     )
     assert r.status_code == 400
+
+
+def test_feedback_roundtrip(client: TestClient, tmp_path, monkeypatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "feedback_file", str(tmp_path / "fb.jsonl"))
+    r = client.post(
+        "/v1/feedback",
+        json={"rating": "good", "comment": "top", "context": {"filename": "a.mp3"}},
+    )
+    assert r.status_code == 201
+    r = client.post("/v1/feedback", json={"rating": "bad"})
+    assert r.status_code == 201
+
+    r = client.get("/v1/feedback")
+    assert r.status_code == 200
+    entries = r.json()
+    assert len(entries) == 2
+    assert entries[0]["rating"] == "good"
+    assert entries[0]["comment"] == "top"
+    assert entries[1]["rating"] == "bad"
+    assert "ts" in entries[0]
+
+    r = client.get("/v1/feedback", params={"limit": 1})
+    assert [e["rating"] for e in r.json()] == ["bad"]
+
+
+def test_feedback_rejects_invalid_rating(client: TestClient) -> None:
+    r = client.post("/v1/feedback", json={"rating": "meh"})
+    assert r.status_code == 422

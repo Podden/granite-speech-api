@@ -152,6 +152,20 @@
         <button type="button" class="btn-ghost dl" data-fmt="json">.json</button>
       </span>
     </div>
+
+    <div class="feedback" id="feedback-box">
+      <div class="fb-row">
+        <span>War das Ergebnis brauchbar?</span>
+        <button type="button" class="btn-ghost fb-rate" data-rating="good">&#128077; Ja</button>
+        <button type="button" class="btn-ghost fb-rate" data-rating="bad">&#128078; Nein</button>
+      </div>
+      <div class="fb-detail" id="fb-detail" hidden>
+        <textarea id="fb-comment" rows="2" maxlength="4000"
+          placeholder="Optional: Was war gut oder schlecht? (z.&nbsp;B. falsche W&ouml;rter, Sprecher vertauscht &hellip;)"></textarea>
+        <button type="button" class="btn-primary" id="fb-send">Feedback senden</button>
+      </div>
+      <p class="fb-thanks" id="fb-thanks" hidden>Danke, Feedback gespeichert.</p>
+    </div>
   </section>
 
   <!-- ── Protokoll ──────────────────────────────────────────── -->
