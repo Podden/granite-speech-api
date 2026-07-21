@@ -1232,6 +1232,54 @@ document.querySelectorAll('input[name="speakers"]').forEach((r) =>
   })
 );
 
+/* ── Model capabilities: only offer what the selected model can do ── */
+const LANGS_COHERE = ["de", "en", "fr", "es", "it", "pt", "nl", "pl", "el", "zh", "ja", "ko", "vi", "ar"];
+const LANGS_GRANITE = ["de", "en", "fr", "es", "pt"];
+const MODEL_CAPS = {
+  // wordTs: false | true | "always"; langs: null = alle (+ Autodetect);
+  // needsLang: Sprachangabe Pflicht (kein Autodetect)
+  "fusion": { wordTs: "always", keywords: false, multi: true, langs: LANGS_COHERE, needsLang: true },
+  "": { wordTs: true, keywords: true, multi: true, langs: [...LANGS_GRANITE, "ja"] },
+  "granite-speech-4.1-2b-plus": { wordTs: true, keywords: true, multi: true, langs: LANGS_GRANITE },
+  "granite-speech-4.1-2b-nar": { wordTs: false, keywords: true, multi: false, langs: LANGS_GRANITE },
+  "cohere-transcribe": { wordTs: false, keywords: false, multi: false, langs: LANGS_COHERE, needsLang: true },
+  "qwen3-asr": { wordTs: false, keywords: false, multi: false, langs: null },
+};
+
+function applyModelCaps() {
+  const caps = MODEL_CAPS[$("#opt-model").value] || MODEL_CAPS[""];
+  const ts = $("#opt-word-ts");
+  if (caps.wordTs === "always") {
+    ts.checked = true;
+    ts.disabled = true;
+  } else {
+    ts.disabled = !caps.wordTs;
+    if (!caps.wordTs) ts.checked = false;
+  }
+  const kw = $("#opt-keywords");
+  kw.disabled = !caps.keywords;
+  kw.placeholder = caps.keywords
+    ? "z. B. Kubernetes, VR Bits, Leipzig"
+    : "vom gewählten Modell nicht unterstützt";
+  const langSel = $("#opt-language");
+  for (const opt of langSel.options) {
+    opt.disabled = opt.value === ""
+      ? !!caps.needsLang
+      : !!caps.langs && !caps.langs.includes(opt.value);
+  }
+  if (langSel.selectedOptions[0]?.disabled) {
+    langSel.value = !caps.langs || caps.langs.includes("de") ? "de" : caps.langs[0];
+  }
+  const multiRadio = document.querySelector('input[name="speakers"][value="multi"]');
+  multiRadio.disabled = !caps.multi;
+  if (!caps.multi && multiRadio.checked) {
+    document.querySelector('input[name="speakers"][value="single"]').checked = true;
+    els.speakerOpts.hidden = true;
+  }
+}
+$("#opt-model").addEventListener("change", applyModelCaps);
+applyModelCaps();
+
 els.btnReset.addEventListener("click", resetFile);
 els.btnStart.addEventListener("click", startTranscription);
 els.btnCancel.addEventListener("click", cancelTranscription);
