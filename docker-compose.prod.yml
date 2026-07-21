@@ -12,6 +12,10 @@ services:
       GRANITE_DTYPE: ${GRANITE_DTYPE:-bfloat16}
       GRANITE_IDLE_UNLOAD_SECONDS: ${GRANITE_IDLE_UNLOAD_SECONDS:-600}
       GRANITE_CORS_ORIGINS: ${GRANITE_CORS_ORIGINS:-https://chat.vr-bits.de}
+      # Gated HF models (pyannote diarization, Cohere Transcribe). HF_TOKEN
+      # additionally lets huggingface_hub authenticate ALL downloads.
+      GRANITE_HF_TOKEN: ${GRANITE_HF_TOKEN:-}
+      HF_TOKEN: ${GRANITE_HF_TOKEN:-}
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     deploy:

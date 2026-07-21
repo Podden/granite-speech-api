@@ -109,7 +109,12 @@ class CohereTranscribeBackend(ASRBackend):
                 # max_new_tokens is per chunk (feature extractor auto-chunks
                 # long audio) — 512 is generous for the ~30s chunk size.
                 outputs = model.generate(**inputs, max_new_tokens=512)
-            return processor.decode(outputs, skip_special_tokens=True)
+            decoded = processor.decode(outputs, skip_special_tokens=True)
+            # decode() reassembles chunked long-form audio and returns one
+            # string per input audio (list) — we always pass exactly one.
+            if isinstance(decoded, (list, tuple)):
+                decoded = " ".join(str(part) for part in decoded)
+            return decoded
 
         async with self._lock:
             if progress_cb:
