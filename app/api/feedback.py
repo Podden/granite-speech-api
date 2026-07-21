@@ -16,16 +16,24 @@ router = APIRouter()
 
 
 class FeedbackIn(BaseModel):
-    rating: Literal["good", "bad"] = Field(
-        description="Overall verdict for the transcription result."
+    rating: Literal["good", "bad"] | None = Field(
+        default=None,
+        description="Optional thumbs verdict (mainly for transcription results).",
+    )
+    category: Literal["transcription", "ui", "feature", "bug", "other"] = Field(
+        default="other",
+        description="What the feedback is about.",
     )
     comment: str | None = Field(
         default=None, max_length=4000,
-        description="Optional free-text feedback (what was good/bad).",
+        description="Free-text feedback (what was good/bad, what is missing).",
     )
     context: dict[str, Any] | None = Field(
         default=None,
-        description="Client context for debugging (filename, settings, timings).",
+        description=(
+            "Client context for debugging: file/settings/timings plus the UI "
+            "log and click trace for reproducible bug reports."
+        ),
     )
 
 

@@ -10,10 +10,13 @@ served natively by `granite-speech-4.1-2b-plus`.
 
 ## Features
 
-- **Browser upload UI** at `/` (served from `app/static/`): drag & drop audio/video,
-  client-side audio extraction from video (Web Audio API, no video bytes uploaded),
-  single/multi-speaker mode, live progress, txt/srt/vtt/json export, log panel,
-  thumbs-up/down feedback (stored as JSONL, see `/v1/feedback`).
+- **Browser upload UI** at `/` (served from `app/static/`): drag & drop audio/video
+  (multiple files = sequential batch), client-side audio extraction from video
+  (Web Audio API, no video bytes uploaded), single/multi-speaker mode, live
+  transcript build-up + model-load status, audio playback with waveform
+  scrubbing and word-level karaoke highlighting, txt/srt/vtt/json export,
+  log panel, always-visible feedback widget (rating/category/comment + UI log
+  and click trace for reproducible bug reports, stored as JSONL via `/v1/feedback`).
 - **OpenAI-compatible** `POST /v1/audio/transcriptions` (multipart-form, all standard fields).
 - **Long-audio chunking**: audio beyond the model limits (9 min ASR/SAA, 3.5 min
   word timestamps) is split at quiet points; SAA uses the model-card incremental
@@ -196,11 +199,20 @@ curl -s --no-buffer http://localhost:8000/v1/audio/transcriptions \
 
 ```jsonl
 {"type":"duration","duration":42.3}
+{"type":"status","stage":"loading_model","model":"ibm-granite/granite-speech-4.1-2b","cold":true}
+{"type":"status","stage":"model_ready","model":"ibm-granite/granite-speech-4.1-2b"}
 {"type":"progress","progress":0}
-{"type":"segment","start":0.0,"end":1.5,"text":"Hello","speaker":"SPEAKER_00"}
+{"type":"partial","text":"Hello world.","start":0.0,"end":1.5}
+{"type":"progress","progress":50.0}
+{"type":"segment","start":0.0,"end":1.5,"text":"Hello","speaker":"SPEAKER_00","words":[...]}
 {"type":"result","text":"Hello world. How are you?","language":"en"}
 {"type":"progress","progress":100}
 ```
+
+`status` reports (cold) model loading, `partial` streams each finished chunk's
+text live, `progress` is real per-chunk progress. Concurrent requests are
+serialized per model; requesting a different model hot-swaps after the running
+inference finishes.
 
 > Streaming is currently a wrapper around the synchronous `transcribe()` —
 > Granite's `generate()` is non-streaming. Token-level streaming via

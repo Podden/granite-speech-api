@@ -281,9 +281,11 @@ def _make_fake_backend():
         async def unload(self) -> None:
             pass
 
-        async def transcribe(self, req, progress_cb=None):
+        async def transcribe(self, req, progress_cb=None, partial_cb=None):
             if progress_cb:
                 progress_cb(50.0)
+            if partial_cb:
+                partial_cb("hi", 0.0, 1.0)
             return (
                 [TranscriptionSegment(id=0, start=0, end=1, text="hi")],
                 "de",
@@ -336,5 +338,10 @@ async def test_transcribe_stream_default_wrapper_event_sequence() -> None:
     assert len(result_events) == 1
     assert result_events[0]["text"] == "hi"
     assert result_events[0]["language"] == "de"
+
+    partial_events = [e for e in events if e["type"] == "partial"]
+    assert partial_events == [{"type": "partial", "text": "hi", "start": 0.0, "end": 1.0}]
+    # Partials must arrive before the final segment events.
+    assert events.index(partial_events[0]) < events.index(segment_events[0])
 
     assert events[-1] == {"type": "progress", "progress": 100}

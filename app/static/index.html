@@ -27,20 +27,27 @@
     <h2><span class="step-no">1</span> Datei ausw&auml;hlen</h2>
     <div class="dropzone" id="dropzone" tabindex="0" role="button"
          aria-label="Audio- oder Videodatei ausw&auml;hlen">
-      <input type="file" id="file-input" accept="audio/*,video/*,.mkv,.m4a,.opus" hidden>
+      <input type="file" id="file-input" accept="audio/*,video/*,.mkv,.m4a,.opus" multiple hidden>
       <div class="dz-idle" id="dz-idle">
         <p class="dz-main">Audio- oder Videodatei hierher ziehen</p>
         <p class="dz-sub">oder klicken zum Ausw&auml;hlen &mdash; mp3, wav, m4a, opus, mp4, mkv, mov &hellip;</p>
         <p class="dz-note">Bei Videos wird die Tonspur direkt im Browser extrahiert,
-           es wird kein Video hochgeladen.</p>
+           es wird kein Video hochgeladen. Konvertiert wird immer verlustfrei in das
+           native Modellformat (16&nbsp;kHz mono WAV) &mdash; mehr Qualit&auml;t bringt
+           dem Modell nichts, weniger kostet Erkennungsgenauigkeit.</p>
       </div>
       <div class="dz-file" id="dz-file" hidden>
-        <canvas id="waveform" width="1200" height="120"></canvas>
+        <canvas id="waveform" width="1200" height="120" title="Klicken zum Springen"></canvas>
         <div class="file-meta">
+          <button type="button" class="btn-ghost btn-play" id="btn-play" hidden
+                  aria-label="Abspielen">&#9654;</button>
+          <span id="play-time" class="mono muted" hidden></span>
           <span id="file-name" class="mono"></span>
           <span id="file-info" class="mono muted"></span>
           <button type="button" class="btn-ghost" id="btn-reset">Andere Datei</button>
         </div>
+        <audio id="audio-player" preload="metadata" hidden></audio>
+        <ul class="batch-list" id="batch-list" hidden></ul>
       </div>
     </div>
     <p class="field-error" id="file-error" hidden></p>
@@ -152,20 +159,35 @@
         <button type="button" class="btn-ghost dl" data-fmt="json">.json</button>
       </span>
     </div>
+    <div id="batch-results"></div>
+  </section>
 
-    <div class="feedback" id="feedback-box">
-      <div class="fb-row">
-        <span>War das Ergebnis brauchbar?</span>
-        <button type="button" class="btn-ghost fb-rate" data-rating="good">&#128077; Ja</button>
-        <button type="button" class="btn-ghost fb-rate" data-rating="bad">&#128078; Nein</button>
-      </div>
-      <div class="fb-detail" id="fb-detail" hidden>
-        <textarea id="fb-comment" rows="2" maxlength="4000"
-          placeholder="Optional: Was war gut oder schlecht? (z.&nbsp;B. falsche W&ouml;rter, Sprecher vertauscht &hellip;)"></textarea>
-        <button type="button" class="btn-primary" id="fb-send">Feedback senden</button>
-      </div>
-      <p class="fb-thanks" id="fb-thanks" hidden>Danke, Feedback gespeichert.</p>
+  <!-- ── Feedback (immer sichtbar) ──────────────────────────── -->
+  <section class="card" id="card-feedback">
+    <h2>Feedback</h2>
+    <p class="fb-intro">Was war gut, was nervt, was fehlt? Gilt f&uuml;r Transkripte genauso
+      wie f&uuml;r Bedienung, Design und fehlende Funktionen.</p>
+    <div class="fb-row">
+      <button type="button" class="btn-ghost fb-rate" data-rating="good">&#128077; Gut</button>
+      <button type="button" class="btn-ghost fb-rate" data-rating="bad">&#128078; Schlecht</button>
+      <label class="fb-cat">Thema
+        <select id="fb-category">
+          <option value="transcription">Transkript-Qualit&auml;t</option>
+          <option value="ui">Bedienung / Design</option>
+          <option value="feature">Featurewunsch</option>
+          <option value="bug">Fehler</option>
+          <option value="other" selected>Allgemein</option>
+        </select>
+      </label>
     </div>
+    <div class="fb-detail" id="fb-detail">
+      <textarea id="fb-comment" rows="2" maxlength="4000"
+        placeholder="Was ist passiert, was w&uuml;nschst du dir? (z.&nbsp;B. falsche W&ouml;rter, Sprecher vertauscht, Button unklar &hellip;)"></textarea>
+      <button type="button" class="btn-primary" id="fb-send">Feedback senden</button>
+    </div>
+    <p class="fb-note">Beim Absenden werden das technische Protokoll und die letzten Klicks
+      mitgeschickt, damit sich Fehler nachvollziehen lassen.</p>
+    <p class="fb-thanks" id="fb-thanks" hidden>Danke, Feedback gespeichert.</p>
   </section>
 
   <!-- ── Protokoll ──────────────────────────────────────────── -->

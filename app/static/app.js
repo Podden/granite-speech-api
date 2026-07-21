@@ -44,9 +44,15 @@ const state = {
   maxSeconds: 600,     // refreshed from /health
   xhr: null,
   segments: [],
+  partials: [],
   resultText: "",
   words: [],
   startedAt: 0,
+  processingSecs: null,
+  queue: [],
+  finishCb: null,
+  audioUrl: null,
+  lastProgress: 0,
 };
 
 /* ── Logging ────────────────────────────────────────────── */
@@ -159,6 +165,8 @@ async function onFileSelected(file) {
     els.fileInfo.textContent = `${fmtSize(file.size)} · Dauer unbekannt (Server prüft)`;
   }
 
+  setupPlayer();
+
   if (state.duration && state.duration > state.maxSeconds) {
     showFileError(
       `Die Aufnahme ist ${fmtDuration(state.duration)} lang — der Server akzeptiert maximal ` +
@@ -206,6 +214,111 @@ function encodeWav(samples, sampleRate) {
   return new Blob([buf], { type: "audio/wav" });
 }
 
+/* ── Audio player + scrubbing ───────────────────────────── */
+
+const audioEl = $("#audio-player");
+const btnPlay = $("#btn-play");
+const playTime = $("#play-time");
+let playheadRaf = 0;
+
+function setupPlayer() {
+  if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
+  // Prefer whatever we upload: extracted WAV is always playable; if the
+  // original was kept (opus/mp3), the browser decoded it already.
+  const src = state.uploadBlob || state.file;
+  if (!src) return;
+  state.audioUrl = URL.createObjectURL(src);
+  audioEl.src = state.audioUrl;
+  btnPlay.hidden = false;
+  playTime.hidden = false;
+  updatePlayTime();
+}
+
+function fmtClock(t) {
+  if (!isFinite(t)) t = 0;
+  const m = Math.floor(t / 60);
+  const s = Math.floor(t % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function updatePlayTime() {
+  const dur = state.duration || audioEl.duration || 0;
+  playTime.textContent = `${fmtClock(audioEl.currentTime)} / ${fmtClock(dur)}`;
+}
+
+function playheadLoop() {
+  drawWaveform(state.lastProgress || 0);
+  updatePlayTime();
+  highlightWordAt(audioEl.currentTime);
+  if (!audioEl.paused) playheadRaf = requestAnimationFrame(playheadLoop);
+}
+
+btnPlay.addEventListener("click", () => {
+  if (audioEl.paused) audioEl.play(); else audioEl.pause();
+});
+audioEl.addEventListener("play", () => {
+  btnPlay.innerHTML = "&#10073;&#10073;";
+  playheadRaf = requestAnimationFrame(playheadLoop);
+});
+audioEl.addEventListener("pause", () => {
+  btnPlay.innerHTML = "&#9654;";
+  cancelAnimationFrame(playheadRaf);
+  drawWaveform(state.lastProgress || 0);
+  updatePlayTime();
+});
+audioEl.addEventListener("ended", () => audioEl.pause());
+audioEl.addEventListener("timeupdate", () => {
+  if (audioEl.paused) {
+    drawWaveform(state.lastProgress || 0);
+    updatePlayTime();
+    highlightWordAt(audioEl.currentTime);
+  }
+});
+audioEl.addEventListener("error", () => {
+  btnPlay.hidden = true;
+  playTime.hidden = true;
+  log("Wiedergabe im Browser nicht möglich (Format).", "warn");
+});
+
+function seekFromEvent(e) {
+  const dur = state.duration || audioEl.duration;
+  if (!dur || !state.file) return;
+  const rect = els.waveform.getBoundingClientRect();
+  const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+  audioEl.currentTime = frac * dur;
+  drawWaveform(state.lastProgress || 0);
+  updatePlayTime();
+  highlightWordAt(audioEl.currentTime);
+}
+
+let scrubbing = false;
+els.waveform.addEventListener("pointerdown", (e) => {
+  scrubbing = true;
+  els.waveform.setPointerCapture(e.pointerId);
+  seekFromEvent(e);
+});
+els.waveform.addEventListener("pointermove", (e) => { if (scrubbing) seekFromEvent(e); });
+els.waveform.addEventListener("pointerup", () => { scrubbing = false; });
+
+/* Wort-Highlight beim Abspielen/Scrubben (nur mit Wort-Timestamps). */
+let wordSpans = [];
+let lastLitSpan = null;
+
+function highlightWordAt(t) {
+  if (!wordSpans.length) return;
+  let lit = null;
+  for (const s of wordSpans) {
+    if (t >= s._start && t < s._end) { lit = s; break; }
+  }
+  if (lit === lastLitSpan) return;
+  if (lastLitSpan) lastLitSpan.classList.remove("playing");
+  if (lit) {
+    lit.classList.add("playing");
+    lit.scrollIntoView({ block: "nearest" });
+  }
+  lastLitSpan = lit;
+}
+
 /* ── Waveform ───────────────────────────────────────────── */
 
 function computePeaks(samples, buckets) {
@@ -226,6 +339,7 @@ function computePeaks(samples, buckets) {
 }
 
 function drawWaveform(progress) {
+  state.lastProgress = progress || 0;
   const canvas = els.waveform;
   const ctx = canvas.getContext("2d");
   const css = getComputedStyle(document.documentElement);
@@ -234,16 +348,23 @@ function drawWaveform(progress) {
   if (!state.peaks) {
     ctx.fillStyle = css.getPropertyValue("--wave").trim();
     ctx.fillRect(0, mid - 1, W, 2);
-    return;
+  } else {
+    const n = state.peaks.length;
+    const bw = W / n;
+    const doneX = W * state.lastProgress;
+    for (let i = 0; i < n; i++) {
+      const x = i * bw;
+      const h = Math.max(2, state.peaks[i] * (H - 8));
+      ctx.fillStyle = css.getPropertyValue(x < doneX ? "--wave-done" : "--wave").trim();
+      ctx.fillRect(x, mid - h / 2, Math.max(1, bw - 1), h);
+    }
   }
-  const n = state.peaks.length;
-  const bw = W / n;
-  const doneX = W * (progress || 0);
-  for (let i = 0; i < n; i++) {
-    const x = i * bw;
-    const h = Math.max(2, state.peaks[i] * (H - 8));
-    ctx.fillStyle = css.getPropertyValue(x < doneX ? "--wave-done" : "--wave").trim();
-    ctx.fillRect(x, mid - h / 2, Math.max(1, bw - 1), h);
+  // Playhead
+  const dur = state.duration || audioEl.duration;
+  if (dur && audioEl.currentTime > 0) {
+    const x = (audioEl.currentTime / dur) * W;
+    ctx.fillStyle = css.getPropertyValue("--err").trim() || "#da1e28";
+    ctx.fillRect(x - 1, 0, 2, H);
   }
 }
 
@@ -296,6 +417,21 @@ function buildFormData() {
 }
 
 function startTranscription() {
+  if (state.queue.length > 1) {
+    runBatch().catch((e) => log(`Batch-Fehler: ${e.message}`, "err"));
+    return;
+  }
+  transcribeCurrent().catch(() => { /* UI already updated by fail() */ });
+}
+
+function transcribeCurrent() {
+  return new Promise((resolve, reject) => {
+    state.finishCb = { resolve, reject };
+    beginTranscription();
+  });
+}
+
+function beginTranscription() {
   if (!state.uploadBlob) return;
   resetResult();
   els.cardStatus.hidden = false;
@@ -306,6 +442,7 @@ function startTranscription() {
   setProgress(0, false);
   state.startedAt = Date.now();
   state.segments = [];
+  state.partials = [];
   state.words = [];
   state.resultText = "";
 
@@ -322,9 +459,9 @@ function startTranscription() {
     setProgress(pct * 0.999, false);
     els.statusDetail.textContent = `${fmtSize(e.loaded)} / ${fmtSize(e.total)}`;
     if (e.loaded >= e.total) {
-      setPhase("transcribe", "Server transkribiert…", "");
+      setPhase("transcribe", "Warte auf Server…", "");
       setProgress(0, true);
-      log("Upload abgeschlossen — Modell wird geladen falls nötig (kann beim ersten Mal dauern).");
+      log("Upload abgeschlossen.");
     }
   };
 
@@ -358,6 +495,19 @@ function handleEvent(line) {
       if (!state.duration) state.duration = ev.duration;
       log(`Server bestätigt Audio: ${fmtDuration(ev.duration)}`);
       break;
+    case "status": {
+      const short = (ev.model || "").split("/").pop();
+      if (ev.stage === "loading_model") {
+        setPhase("transcribe", "Modell wird geladen…",
+          ev.cold ? `${short} — Kaltstart, kann 1–5 min dauern` : `Wechsel auf ${short}`);
+        setProgress(0, true);
+        log(`Modell wird ${ev.cold ? "kalt " : ""}geladen: ${ev.model}`);
+      } else if (ev.stage === "model_ready") {
+        setPhase("transcribe", "Server transkribiert…", short);
+        log(`Modell bereit: ${ev.model}`);
+      }
+      break;
+    }
     case "progress": {
       const pct = ev.progress;
       if (pct > 0) {
@@ -369,6 +519,11 @@ function handleEvent(line) {
       log(`Fortschritt: ${Math.round(pct)} %`);
       break;
     }
+    case "partial":
+      state.partials.push(ev);
+      if (els.cardResult.hidden) els.cardResult.hidden = false;
+      renderTranscript();
+      break;
     case "segment":
       state.segments.push(ev);
       appendSegment(ev);
@@ -409,6 +564,8 @@ function onRequestDone(xhr) {
   renderTranscript();
   log(`Transkription abgeschlossen in ${secs} s (${state.segments.length} Segmente).`);
   els.cardResult.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  state.finishCb?.resolve();
+  state.finishCb = null;
 }
 
 function fail(msg) {
@@ -423,6 +580,8 @@ function fail(msg) {
   els.btnCancel.hidden = true;
   log(msg, "err");
   showFileError(msg);
+  state.finishCb?.reject(new Error(msg));
+  state.finishCb = null;
 }
 
 function cancelTranscription() {
@@ -448,6 +607,8 @@ function appendSegment(seg) {
 function renderTranscript() {
   const el = els.transcript;
   el.textContent = "";
+  wordSpans = [];
+  lastLitSpan = null;
   if (state.segments.length) {
     let lastSpeaker = null;
     for (const seg of state.segments) {
@@ -458,19 +619,39 @@ function renderTranscript() {
         el.appendChild(spk);
         lastSpeaker = seg.speaker;
       }
-      el.appendChild(document.createTextNode((seg.text || "").trim() + " "));
+      if (seg.words && seg.words.length) {
+        // Word spans enable karaoke-style highlighting while playing/scrubbing.
+        for (const w of seg.words) {
+          const span = document.createElement("span");
+          span.className = "w";
+          span.textContent = w.word + " ";
+          span._start = w.start;
+          span._end = w.end;
+          span.addEventListener("click", () => { audioEl.currentTime = w.start; drawWaveform(state.lastProgress); updatePlayTime(); highlightWordAt(w.start); });
+          el.appendChild(span);
+          wordSpans.push(span);
+        }
+      } else {
+        el.appendChild(document.createTextNode((seg.text || "").trim() + " "));
+      }
     }
+  } else if (state.partials.length) {
+    // Live preview while the server is still transcribing; speaker tags in
+    // raw model output become readable labels.
+    const text = state.partials.map((p) => p.text).join(" ")
+      .replace(/\[Speaker\s+(\d+)\]\s*:/g, (_, n) => `\n[Sprecher ${n}] `);
+    el.textContent = text.trim() + " …";
   } else {
     el.textContent = state.resultText;
   }
   el.scrollTop = el.scrollHeight;
 }
 
-function plainText() {
-  if (!state.segments.length) return state.resultText;
+function plainTextOf(segments, resultText) {
+  if (!segments.length) return resultText || "";
   const parts = [];
   let lastSpeaker = null;
-  for (const seg of state.segments) {
+  for (const seg of segments) {
     let t = (seg.text || "").trim();
     if (!t) continue;
     if (seg.speaker && seg.speaker !== lastSpeaker) {
@@ -483,9 +664,11 @@ function plainText() {
   return parts.join(" ").trim();
 }
 
-function toSrt() {
+function plainText() { return plainTextOf(state.segments, state.resultText); }
+
+function toSrt(segments = state.segments) {
   const lines = [];
-  state.segments.forEach((seg, i) => {
+  segments.forEach((seg, i) => {
     let t = (seg.text || "").trim();
     if (seg.speaker) t = `[${speakerLabel(seg.speaker)}] ${t}`;
     lines.push(String(i + 1), `${fmtTs(seg.start, ",")} --> ${fmtTs(seg.end, ",")}`, t, "");
@@ -493,9 +676,9 @@ function toSrt() {
   return lines.join("\n");
 }
 
-function toVtt() {
+function toVtt(segments = state.segments) {
   const lines = ["WEBVTT", ""];
-  for (const seg of state.segments) {
+  for (const seg of segments) {
     let t = (seg.text || "").trim();
     if (seg.speaker) t = `<v ${speakerLabel(seg.speaker)}>${t}`;
     lines.push(`${fmtTs(seg.start, ".")} --> ${fmtTs(seg.end, ".")}`, t, "");
@@ -503,20 +686,16 @@ function toVtt() {
   return lines.join("\n");
 }
 
-function download(fmt) {
+function buildExport(fmt, segments, text, filename, duration) {
   let content, mime = "text/plain";
-  if (fmt === "txt") content = plainText();
-  else if (fmt === "srt") content = toSrt();
-  else if (fmt === "vtt") { content = toVtt(); mime = "text/vtt"; }
+  if (fmt === "txt") content = text;
+  else if (fmt === "srt") content = toSrt(segments);
+  else if (fmt === "vtt") { content = toVtt(segments); mime = "text/vtt"; }
   else {
-    content = JSON.stringify({
-      text: plainText(),
-      duration: state.duration,
-      segments: state.segments,
-    }, null, 2);
+    content = JSON.stringify({ text, duration, segments }, null, 2);
     mime = "application/json";
   }
-  const base = (state.file?.name || "transkript").replace(/\.[^.]+$/, "");
+  const base = (filename || "transkript").replace(/\.[^.]+$/, "");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([content], { type: mime }));
   a.download = `${base}.${fmt}`;
@@ -525,33 +704,56 @@ function download(fmt) {
   log(`Download: ${base}.${fmt}`);
 }
 
+function download(fmt) {
+  buildExport(fmt, state.segments, plainText(), state.file?.name, state.duration);
+}
+
 function resetResult() {
   els.cardResult.hidden = true;
   els.cardStatus.hidden = true;
   els.btnCancel.hidden = false;
   els.transcript.textContent = "";
   state.segments = [];
+  state.partials = [];
   state.resultText = "";
   els.fileError.hidden = true;
-  resetFeedback();
 }
+
+/* ── Aktions-Trace (für nachvollziehbare Bug-Reports) ───── */
+
+const trace = [];
+
+function traceEvent(kind, detail) {
+  trace.push({ t: new Date().toISOString(), [kind === "change" ? "change" : "click"]: detail });
+  if (trace.length > 300) trace.shift();
+}
+
+document.addEventListener("click", (e) => {
+  const el = e.target.closest("button, label.radio-card, summary, .dropzone");
+  if (!el) return;
+  traceEvent("click", el.id || (el.textContent || "").trim().slice(0, 40) || el.className);
+}, true);
+
+document.addEventListener("change", (e) => {
+  const el = e.target;
+  if (!el.id && !el.name) return;
+  if (el.id === "fb-comment") return; // Kommentartext nicht in den Trace
+  const val = el.type === "checkbox" ? el.checked
+    : el.type === "file" ? "(Datei gewählt)"
+    : String(el.value).slice(0, 60);
+  traceEvent("change", `${el.id || el.name}=${val}`);
+}, true);
 
 /* ── Feedback ───────────────────────────────────────────── */
 
 let fbRating = null;
 
-function resetFeedback() {
-  fbRating = null;
-  $("#fb-detail").hidden = true;
-  $("#fb-thanks").hidden = true;
-  document.querySelectorAll(".fb-rate").forEach((b) => {
-    b.classList.remove("selected");
-    b.disabled = false;
-  });
-  $("#fb-comment").value = "";
-}
-
 async function sendFeedback() {
+  const comment = $("#fb-comment").value.trim();
+  if (!fbRating && !comment) {
+    log("Feedback: bitte Bewertung anklicken oder Text eingeben.", "warn");
+    return;
+  }
   const settingsUsed = {
     speakers: document.querySelector('input[name="speakers"]:checked').value,
     language: $("#opt-language").value || null,
@@ -561,14 +763,22 @@ async function sendFeedback() {
   };
   const body = {
     rating: fbRating,
-    comment: $("#fb-comment").value.trim() || null,
+    category: $("#fb-category").value,
+    comment: comment || null,
     context: {
       filename: state.file?.name || null,
       duration_seconds: state.duration ? Math.round(state.duration) : null,
       upload_bytes: state.uploadBlob?.size || null,
       processing_seconds: state.processingSecs ?? null,
       segments: state.segments.length,
+      status: els.statusText.textContent.trim() || null,
       settings: settingsUsed,
+      ui_log: els.log.textContent.split("\n").filter(Boolean).slice(-150),
+      actions: trace.slice(-200),
+      browser: {
+        user_agent: navigator.userAgent,
+        viewport: `${window.innerWidth}x${window.innerHeight}`,
+      },
     },
   };
   try {
@@ -578,10 +788,12 @@ async function sendFeedback() {
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    $("#fb-detail").hidden = true;
     $("#fb-thanks").hidden = false;
-    document.querySelectorAll(".fb-rate").forEach((b) => { b.disabled = true; });
-    log(`Feedback gesendet (${fbRating}).`);
+    $("#fb-comment").value = "";
+    fbRating = null;
+    document.querySelectorAll(".fb-rate").forEach((b) => b.classList.remove("selected"));
+    setTimeout(() => { $("#fb-thanks").hidden = true; }, 4000);
+    log(`Feedback gesendet (${body.category}${body.rating ? ", " + body.rating : ""}).`);
   } catch (err) {
     log(`Feedback senden fehlgeschlagen: ${err.message}`, "err");
   }
@@ -589,15 +801,132 @@ async function sendFeedback() {
 
 function resetFile() {
   resetResult();
+  audioEl.pause();
+  audioEl.removeAttribute("src");
+  if (state.audioUrl) { URL.revokeObjectURL(state.audioUrl); state.audioUrl = null; }
+  btnPlay.hidden = true;
+  playTime.hidden = true;
   state.file = null;
   state.uploadBlob = null;
   state.peaks = null;
   state.duration = null;
+  state.queue = [];
+  renderBatchList();
   els.dzIdle.hidden = false;
   els.dzFile.hidden = true;
   els.dropzone.classList.remove("has-file");
   els.fileInput.value = "";
   els.btnStart.disabled = true;
+}
+
+/* ── Batch (mehrere Dateien nacheinander) ───────────────── */
+
+function onFilesSelected(files) {
+  if (!files.length) return;
+  if (files.length === 1) {
+    state.queue = [];
+    renderBatchList();
+    els.cardResult.classList.remove("batch-mode");
+    clearBatchResults();
+    onFileSelected(files[0]);
+    return;
+  }
+  resetFile();
+  els.cardResult.classList.add("batch-mode");
+  state.queue = files.map((f) => ({ file: f, status: "wartet", result: null }));
+  els.dzIdle.hidden = true;
+  els.dzFile.hidden = false;
+  els.dropzone.classList.add("has-file");
+  els.fileName.textContent = `${files.length} Dateien`;
+  const total = files.reduce((s, f) => s + f.size, 0);
+  els.fileInfo.textContent = `${fmtSize(total)} gesamt — werden nacheinander verarbeitet`;
+  state.peaks = null;
+  drawWaveform(0);
+  renderBatchList();
+  els.btnStart.disabled = false;
+  log(`${files.length} Dateien ausgewählt (Batch).`);
+}
+
+function renderBatchList() {
+  const ul = $("#batch-list");
+  if (!state.queue.length) { ul.hidden = true; ul.textContent = ""; return; }
+  ul.hidden = false;
+  ul.textContent = "";
+  const icons = { wartet: "○", "läuft": "◐", fertig: "✓", fehler: "✗" };
+  for (const item of state.queue) {
+    const li = document.createElement("li");
+    li.className = `bstatus-${item.status === "läuft" ? "laeuft" : item.status}`;
+    const ic = document.createElement("span"); ic.className = "b-ic"; ic.textContent = icons[item.status];
+    const nm = document.createElement("span"); nm.className = "b-name"; nm.textContent = item.file.name;
+    const st = document.createElement("span"); st.className = "b-st mono muted";
+    st.textContent = `${fmtSize(item.file.size)} · ${item.status}`;
+    li.append(ic, nm, st);
+    ul.appendChild(li);
+  }
+}
+
+async function runBatch() {
+  const queue = state.queue;
+  els.cardResult.classList.add("batch-mode");
+  clearBatchResults();
+  for (const item of queue) {
+    item.status = "läuft";
+    renderBatchList();
+    try {
+      await onFileSelected(item.file);
+      state.queue = queue; // onFileSelected leaves the queue alone, keep reference
+      els.btnStart.disabled = true;
+      if (!state.uploadBlob) throw new Error("Datei konnte nicht gelesen werden");
+      if (state.duration && state.duration > state.maxSeconds) throw new Error("zu lang für den Server");
+      await transcribeCurrent();
+      item.result = {
+        segments: [...state.segments],
+        text: plainText(),
+        duration: state.duration,
+        name: item.file.name,
+      };
+      item.status = "fertig";
+      appendBatchResult(item);
+    } catch (e) {
+      item.status = "fehler";
+      log(`${item.file.name}: ${e.message}`, "err");
+    }
+    renderBatchList();
+  }
+  els.btnStart.disabled = false;
+  els.transcript.textContent = "";
+  const ok = queue.filter((i) => i.status === "fertig").length;
+  setPhase("done", "Alle Dateien verarbeitet.", `${ok}/${queue.length} erfolgreich`);
+  setStep("done", "done");
+  log(`Batch abgeschlossen: ${ok}/${queue.length} erfolgreich.`);
+}
+
+function clearBatchResults() { $("#batch-results").textContent = ""; }
+
+function appendBatchResult(item) {
+  els.cardResult.hidden = false;
+  const d = document.createElement("details");
+  d.className = "batch-result";
+  d.open = true;
+  const s = document.createElement("summary");
+  s.textContent = `✓ ${item.result.name}`;
+  const body = document.createElement("div");
+  body.className = "transcript";
+  body.textContent = item.result.text;
+  const acts = document.createElement("div");
+  acts.className = "result-actions";
+  for (const fmt of ["txt", "srt", "vtt", "json"]) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn-ghost";
+    b.textContent = "." + fmt;
+    b.addEventListener("click", () =>
+      buildExport(fmt, item.result.segments, item.result.text, item.result.name, item.result.duration)
+    );
+    acts.appendChild(b);
+  }
+  d.append(s, body, acts);
+  $("#batch-results").appendChild(d);
 }
 
 /* ── Wiring ─────────────────────────────────────────────── */
@@ -610,7 +939,7 @@ els.dropzone.addEventListener("keydown", (e) => {
   if ((e.key === "Enter" || e.key === " ") && !state.file) { e.preventDefault(); els.fileInput.click(); }
 });
 els.fileInput.addEventListener("change", () => {
-  if (els.fileInput.files.length) onFileSelected(els.fileInput.files[0]);
+  if (els.fileInput.files.length) onFilesSelected(Array.from(els.fileInput.files));
 });
 ["dragover", "dragenter"].forEach((t) =>
   els.dropzone.addEventListener(t, (e) => { e.preventDefault(); els.dropzone.classList.add("dragover"); })
@@ -619,7 +948,7 @@ els.fileInput.addEventListener("change", () => {
   els.dropzone.addEventListener(t, (e) => { e.preventDefault(); els.dropzone.classList.remove("dragover"); })
 );
 els.dropzone.addEventListener("drop", (e) => {
-  if (e.dataTransfer.files.length) onFileSelected(e.dataTransfer.files[0]);
+  if (e.dataTransfer.files.length) onFilesSelected(Array.from(e.dataTransfer.files));
 });
 
 document.querySelectorAll('input[name="speakers"]').forEach((r) =>
@@ -642,9 +971,10 @@ document.querySelectorAll(".dl").forEach((b) =>
 );
 document.querySelectorAll(".fb-rate").forEach((b) =>
   b.addEventListener("click", () => {
-    fbRating = b.dataset.rating;
-    document.querySelectorAll(".fb-rate").forEach((x) => x.classList.toggle("selected", x === b));
-    $("#fb-detail").hidden = false;
+    fbRating = fbRating === b.dataset.rating ? null : b.dataset.rating;
+    document.querySelectorAll(".fb-rate").forEach((x) =>
+      x.classList.toggle("selected", x.dataset.rating === fbRating)
+    );
     $("#fb-thanks").hidden = true;
   })
 );

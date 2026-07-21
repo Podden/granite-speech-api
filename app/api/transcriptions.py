@@ -9,6 +9,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from app.audio import get_duration
 from app.backends import registry
+from app.backends.granite import normalize_model_id
 from app.config import settings
 from app.schema import (
     TranscriptionRequest,
@@ -203,14 +204,15 @@ async def transcribe(
         max_speakers=max_speakers,
     )
 
-    backend = await registry.acquire(model=req.model, want_plus_features=want_plus)
-
     if do_stream:
+        # Model acquisition happens inside the stream so the client sees
+        # loading status (cold start after idle-unload can take a while).
         return StreamingResponse(
-            _ndjson_stream(backend, req, duration),
+            _ndjson_stream(req, duration, want_plus),
             media_type="application/x-ndjson",
         )
 
+    backend = await registry.acquire(model=req.model, want_plus_features=want_plus)
     try:
         segments, detected_lang = await backend.transcribe(req)
     finally:
@@ -293,13 +295,30 @@ def _to_vtt(segments: list[TranscriptionSegment]) -> str:
     return "\n".join(lines)
 
 
-async def _ndjson_stream(backend, req: TranscriptionRequest, duration: float):
+async def _ndjson_stream(req: TranscriptionRequest, duration: float, want_plus: bool):
+    backend = None
     try:
         yield json.dumps({"type": "duration", "duration": duration}) + "\n"
+
+        target = normalize_model_id(req.model, want_plus_features=want_plus)
+        loaded = registry.loaded_model
+        if loaded != target:
+            yield json.dumps({
+                "type": "status",
+                "stage": "loading_model",
+                "model": target,
+                "cold": loaded is None,
+            }) + "\n"
+        backend = await registry.acquire(model=req.model, want_plus_features=want_plus)
+        yield json.dumps({
+            "type": "status", "stage": "model_ready", "model": backend.model_id,
+        }) + "\n"
+
         async for event in backend.transcribe_stream(req):
             yield json.dumps(event) + "\n"
     except Exception as exc:  # noqa: BLE001 — surface to the client, stream is already 200
         log.exception("Streaming transcription failed")
         yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
     finally:
-        await registry.release()
+        if backend is not None:
+            await registry.release()

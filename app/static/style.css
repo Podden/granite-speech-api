@@ -135,7 +135,28 @@ main { max-width: 860px; margin: 2rem auto 4rem; padding: 0 1rem; display: grid;
 .dz-main { margin: 0; font-size: 1.05rem; font-weight: 600; }
 .dz-sub { margin: 0.35rem 0 0; color: var(--text-2); }
 .dz-note { margin: 0.9rem 0 0; font-size: 0.8rem; color: var(--text-2); }
-#waveform { width: 100%; height: 60px; display: block; }
+#waveform { width: 100%; height: 60px; display: block; cursor: pointer; touch-action: none; }
+.btn-play { min-width: 2.4rem; }
+
+.batch-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  font-size: 0.85rem;
+}
+.batch-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0.25rem;
+  border-top: 1px solid var(--border);
+}
+.batch-list .b-ic { width: 1.2rem; text-align: center; }
+.batch-list .b-name { overflow-wrap: anywhere; }
+.batch-list .b-st { margin-left: auto; white-space: nowrap; }
+.batch-list .bstatus-laeuft { color: var(--accent); font-weight: 600; }
+.batch-list .bstatus-fertig .b-ic { color: var(--ok); }
+.batch-list .bstatus-fehler { color: var(--err); }
 .file-meta {
   display: flex; align-items: center; gap: 1rem;
   margin-top: 0.6rem; flex-wrap: wrap;
@@ -273,6 +294,21 @@ button { font: inherit; border-radius: 0; cursor: pointer; }
   overflow-wrap: anywhere;
 }
 .transcript .spk { color: var(--accent); font-family: var(--mono); font-size: 0.82em; }
+.transcript .w { cursor: pointer; }
+.transcript .w:hover { text-decoration: underline dotted; }
+.transcript .w.playing { background: var(--accent); color: #fff; }
+
+#card-result.batch-mode > .result-actions { display: none; }
+.batch-result { border: 1px solid var(--border); margin-top: 0.75rem; }
+.batch-result summary {
+  padding: 0.5rem 0.9rem;
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--ok);
+  user-select: none;
+}
+.batch-result .transcript { margin: 0 0.9rem; max-height: 14rem; }
+.batch-result .result-actions { padding: 0.6rem 0.9rem 0.9rem; margin-top: 0; }
 .result-actions {
   display: flex; align-items: center; gap: 1rem;
   margin-top: 1rem; flex-wrap: wrap;
@@ -280,13 +316,10 @@ button { font: inherit; border-radius: 0; cursor: pointer; }
 .dl-group { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; color: var(--text-2); }
 
 /* ── Feedback ───────────────────────────────────────────── */
-.feedback {
-  margin-top: 1.25rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--border);
-  font-size: 0.9rem;
-}
+.fb-intro { margin: -0.25rem 0 0.9rem; color: var(--text-2); font-size: 0.9rem; }
 .fb-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.fb-cat { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--text-2); margin-left: auto; }
+.fb-note { margin: 0.75rem 0 0; font-size: 0.78rem; color: var(--text-2); }
 .fb-rate.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .fb-detail { display: flex; gap: 0.75rem; margin-top: 0.75rem; align-items: flex-end; flex-wrap: wrap; }
 .fb-detail textarea {

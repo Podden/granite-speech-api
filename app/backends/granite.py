@@ -190,6 +190,7 @@ class GraniteBackend(ASRBackend):
         self,
         req: TranscriptionRequest,
         progress_cb: Callable[[float], None] | None = None,
+        partial_cb: Callable[[str, float, float], None] | None = None,
     ) -> tuple[list[TranscriptionSegment], str | None]:
         if self._model is None:
             raise RuntimeError("Model not loaded")
@@ -210,20 +211,25 @@ class GraniteBackend(ASRBackend):
             if progress_cb and total_work > 0:
                 progress_cb(min(99.0, done_work / total_work * 100.0))
 
+        def partial(text: str, start: float, end: float) -> None:
+            if partial_cb and text.strip():
+                partial_cb(text.strip(), round(start, 3), round(end, 3))
+
         async with self._lock:
             if want_words and want_speakers:
                 # Two-pass: word-timestamps + speakers, merge by sequential alignment.
-                words = await self._words_pass(wav, duration, req, tick)
-                spk_text = await self._saa_pass(wav, duration, req, tick)
+                # Live partials come from the first (word-timestamp) pass only.
+                words = await self._words_pass(wav, duration, req, tick, partial)
+                spk_text = await self._saa_pass(wav, duration, req, tick, None)
                 segments = _merge_words_and_speakers(words, spk_text)
             elif want_words:
-                words = await self._words_pass(wav, duration, req, tick)
+                words = await self._words_pass(wav, duration, req, tick, partial)
                 segments = _segments_from_words(words, fallback_end=duration)
             elif want_speakers:
-                spk_text = await self._saa_pass(wav, duration, req, tick)
+                spk_text = await self._saa_pass(wav, duration, req, tick, partial)
                 segments = _parse_speaker_segments(spk_text, duration)
             else:
-                segments = await self._asr_pass(wav, duration, req, tick)
+                segments = await self._asr_pass(wav, duration, req, tick, partial)
 
         language = req.language or _guess_lang(req.translate_to)
         return segments, language
@@ -234,6 +240,7 @@ class GraniteBackend(ASRBackend):
         duration: float,
         req: TranscriptionRequest,
         tick: Callable[[float], None],
+        partial: Callable[[str, float, float], None] | None = None,
     ) -> list[TranscriptionSegment]:
         """Plain ASR / AST, chunked at quiet points when above the model limit."""
         prompt = self._build_prompt(
@@ -254,6 +261,8 @@ class GraniteBackend(ASRBackend):
                         text=text,
                     )
                 )
+                if partial:
+                    partial(text, t0, t1)
             tick(t1 - t0)
         if not segments:
             segments = [TranscriptionSegment(id=0, start=0.0, end=duration, text="")]
@@ -265,6 +274,7 @@ class GraniteBackend(ASRBackend):
         duration: float,
         req: TranscriptionRequest,
         tick: Callable[[float], None],
+        partial: Callable[[str, float, float], None] | None = None,
     ) -> list[TranscriptionWord]:
         """Word-timestamp pass, chunked to the (much lower) timestamp limit."""
         prompt = self._build_prompt(
@@ -277,7 +287,10 @@ class GraniteBackend(ASRBackend):
             ts_text = await self._run(
                 piece, prompt, max_new_tokens=_token_budget(t1 - t0, "ts")
             )
-            words.extend(_parse_words(_collapse_repeats(ts_text), time_offset=t0))
+            chunk_words = _parse_words(_collapse_repeats(ts_text), time_offset=t0)
+            words.extend(chunk_words)
+            if partial and chunk_words:
+                partial(" ".join(w.word for w in chunk_words), t0, t1)
             tick(t1 - t0)
         return words
 
@@ -287,6 +300,7 @@ class GraniteBackend(ASRBackend):
         duration: float,
         req: TranscriptionRequest,
         tick: Callable[[float], None],
+        partial: Callable[[str, float, float], None] | None = None,
     ) -> str:
         """Speaker attribution via the model-card incremental decoding scheme.
 
@@ -302,8 +316,11 @@ class GraniteBackend(ASRBackend):
             text = await self._run(
                 wav, prompt, max_new_tokens=_token_budget(duration, "saa")
             )
+            text = _collapse_repeats(text)
+            if partial:
+                partial(text, 0.0, duration)
             tick(duration)
-            return _collapse_repeats(text)
+            return text
 
         windows = _plan_windows(wav, duration, SAA_INCREMENT_SECONDS, SAA_INCREMENT_SECONDS)
         parts: list[str] = []
@@ -324,6 +341,8 @@ class GraniteBackend(ASRBackend):
             text = _collapse_repeats(text).strip()
             parts.append(text)
             prefix = (prefix + " " + text).strip()
+            if partial:
+                partial(text, t0, t1)
             tick(t1 - t0)
         return " ".join(p for p in parts if p)
 

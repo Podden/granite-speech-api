@@ -140,3 +140,17 @@ def test_feedback_roundtrip(client: TestClient, tmp_path, monkeypatch) -> None:
 def test_feedback_rejects_invalid_rating(client: TestClient) -> None:
     r = client.post("/v1/feedback", json={"rating": "meh"})
     assert r.status_code == 422
+
+
+def test_feedback_without_rating(client: TestClient, tmp_path, monkeypatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "feedback_file", str(tmp_path / "fb.jsonl"))
+    r = client.post(
+        "/v1/feedback",
+        json={"category": "feature", "comment": "Dark-Mode-Toggle bitte"},
+    )
+    assert r.status_code == 201
+    entry = client.get("/v1/feedback").json()[0]
+    assert entry["rating"] is None
+    assert entry["category"] == "feature"
