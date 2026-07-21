@@ -93,6 +93,24 @@
       </div>
     </fieldset>
 
+    <details class="advanced" id="sum-settings">
+      <summary>Zusammenfassung (optional, per KI-Sprachmodell)</summary>
+      <div class="adv-grid">
+        <label class="check wide">
+          <input type="checkbox" id="sum-auto">
+          Nach der Transkription automatisch zusammenfassen
+        </label>
+        <label>Modell
+          <select id="sum-model" disabled>
+            <option value="">Lade Modelle&hellip;</option>
+          </select>
+        </label>
+        <label class="wide">System-Prompt
+          <textarea id="sum-system" rows="4" maxlength="8000">Du bist ein Assistent, der Gespr&auml;chs-Transkripte zusammenfasst. Fasse das Transkript strukturiert zusammen: zuerst ein &Uuml;berblick in 3-5 S&auml;tzen, dann die wichtigsten Punkte als Stichpunkte, zuletzt offene Aufgaben und Entscheidungen, falls vorhanden. Antworte auf Deutsch.</textarea>
+        </label>
+      </div>
+    </details>
+
     <details class="advanced" id="advanced">
       <summary>Erweiterte Optionen</summary>
       <div class="adv-grid">
@@ -171,19 +189,10 @@
       </span>
     </div>
     <details class="summary-box" id="summary-box">
-      <summary>Zusammenfassung <span class="muted">(optional, per KI-Sprachmodell)</span></summary>
+      <summary>Zusammenfassung <span class="muted">(Modell &amp; System-Prompt in den Einstellungen)</span></summary>
       <div class="sum-controls">
-        <label>Modell
-          <select id="sum-model" disabled>
-            <option value="">Lade Modelle&hellip;</option>
-          </select>
-        </label>
         <button type="button" class="btn-primary" id="btn-summarize" disabled>Zusammenfassen</button>
       </div>
-      <details class="sum-prompt">
-        <summary>System-Prompt anpassen</summary>
-        <textarea id="sum-system" rows="4" maxlength="8000">Du bist ein Assistent, der Gespr&auml;chs-Transkripte zusammenfasst. Fasse das Transkript strukturiert zusammen: zuerst ein &Uuml;berblick in 3-5 S&auml;tzen, dann die wichtigsten Punkte als Stichpunkte, zuletzt offene Aufgaben und Entscheidungen, falls vorhanden. Antworte auf Deutsch.</textarea>
-      </details>
       <div class="transcript sum-output" id="summary-output" hidden></div>
       <div class="result-actions" id="sum-actions" hidden>
         <button type="button" class="btn-ghost" id="btn-sum-copy">Zusammenfassung kopieren</button>

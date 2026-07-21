@@ -390,17 +390,9 @@ footer a { color: var(--accent); }
   display: flex; align-items: flex-end; gap: 1rem; flex-wrap: wrap;
   padding: 1rem 1rem 0;
 }
-.sum-controls label {
-  display: flex; flex-direction: column; gap: 0.3rem;
-  font-size: 0.85rem; color: var(--text-2);
-  flex: 1; min-width: 240px;
-}
-.sum-prompt { margin: 0.75rem 1rem 0; }
-.sum-prompt summary { cursor: pointer; font-size: 0.85rem; color: var(--text-2); user-select: none; }
-.sum-prompt textarea {
+.adv-grid textarea {
   width: 100%;
   box-sizing: border-box;
-  margin-top: 0.5rem;
   font: inherit;
   font-size: 0.85rem;
   color: var(--text);

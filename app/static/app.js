@@ -643,6 +643,11 @@ function onRequestDone(xhr) {
   els.cardResult.scrollIntoView({ behavior: "smooth", block: "nearest" });
   state.finishCb?.resolve();
   state.finishCb = null;
+  // Auto-summary (configured in step 2) — single-file mode only.
+  if ($("#sum-auto").checked && !els.cardResult.classList.contains("batch-mode")) {
+    log("Starte automatische Zusammenfassung…");
+    runSummary().catch((e) => log(`Zusammenfassung: ${e.message}`, "err"));
+  }
 }
 
 function fail(msg) {
@@ -861,6 +866,7 @@ async function runSummary() {
   if (!text.trim()) { log("Kein Transkript zum Zusammenfassen vorhanden.", "warn"); return; }
   if (!sumModel.value || summarizing) return;
   summarizing = true;
+  $("#summary-box").open = true;
   btnSummarize.disabled = true;
   btnSummarize.textContent = "Fasst zusammen…";
   sumOutput.hidden = false;
@@ -972,6 +978,8 @@ async function sendFeedback() {
     model: $("#opt-model").value || null,
     word_timestamps: $("#opt-word-ts").checked,
     translate_to: $("#opt-translate").value || null,
+    summary_auto: $("#sum-auto").checked,
+    summary_model: $("#sum-model").value || null,
   };
   const body = {
     rating: fbRating,
