@@ -163,7 +163,18 @@ function fmtTs(t, sep) {
 /* ── File preparation ───────────────────────────────────── */
 
 async function onFileSelected(file) {
-  resetResult();
+  // Gleiche Datei wie das gespeicherte Transkript → Ergebnis stehen lassen,
+  // damit Wiedergabe und Wortsprung nach einem Reload weitergehen.
+  const keepResult = sameFile(sessionFileSig, file) &&
+    (state.segments.length > 0 || !!state.resultText);
+  if (keepResult) {
+    els.cardStatus.hidden = true;
+    els.btnCancel.hidden = false;
+    log("Gleiche Datei wie das vorhandene Transkript — Ergebnis bleibt erhalten. " +
+        "„Transkription starten“ überschreibt es.");
+  } else {
+    resetResult();
+  }
   state.file = file;
   state.uploadBlob = null;
   state.duration = null;
@@ -1091,8 +1102,24 @@ function selectedFormats() {
    kann der Browser nicht wiederherstellen. */
 const SESSION_KEY = "gsa:last-result";
 
+// Signatur der Datei, zu der das gespeicherte Transkript gehört — wird die
+// gleiche Datei nach einem Reload erneut gewählt, bleibt das Transkript stehen.
+let sessionFileSig = null;
+
+function fileSig(file) {
+  if (!file) return null;
+  return { name: file.name, size: file.size, lastModified: file.lastModified || 0 };
+}
+
+function sameFile(sig, file) {
+  const b = fileSig(file);
+  return !!sig && !!b && sig.name === b.name && sig.size === b.size &&
+    sig.lastModified === b.lastModified;
+}
+
 function saveSession() {
   try {
+    sessionFileSig = fileSig(state.file);
     const json = JSON.stringify({
       v: 1,
       savedAt: Date.now(),
@@ -1102,6 +1129,7 @@ function saveSession() {
       duration: state.duration,
       processingSecs: state.processingSecs,
       fileName: state.file?.name || state.uploadName || null,
+      file: sessionFileSig,
     });
     if (json.length > 4_000_000) return; // localStorage-Quota nicht sprengen
     localStorage.setItem(SESSION_KEY, json);
@@ -1109,6 +1137,7 @@ function saveSession() {
 }
 
 function clearSession() {
+  sessionFileSig = null;
   try { localStorage.removeItem(SESSION_KEY); } catch { /* egal */ }
 }
 
@@ -1121,11 +1150,13 @@ function restoreSession() {
   state.resultText = data.resultText || "";
   state.speakerNames = data.speakerNames || {};
   state.processingSecs = data.processingSecs ?? null;
+  sessionFileSig = data.file || null;
   els.cardResult.hidden = false;
   renderTranscript();
   renderSpeakerEditor();
   const when = new Date(data.savedAt).toLocaleString("de-DE", { hour12: false });
-  log(`Letztes Transkript wiederhergestellt (${data.fileName || "unbenannt"}, ${when}). Für die Wiedergabe die Audiodatei erneut wählen.`);
+  log(`Letztes Transkript wiederhergestellt (${data.fileName || "unbenannt"}, ${when}). ` +
+      `Dieselbe Datei erneut wählen, dann bleibt es erhalten und Wiedergabe/Wortsprung gehen wieder.`);
 }
 
 function resetResult() {
@@ -1479,6 +1510,7 @@ function resetFile() {
   if (state.audioUrl) { URL.revokeObjectURL(state.audioUrl); state.audioUrl = null; }
   btnPlay.hidden = true;
   playTime.hidden = true;
+  btnPlayTr.disabled = true;
   state.file = null;
   state.uploadBlob = null;
   state.peaks = null;
