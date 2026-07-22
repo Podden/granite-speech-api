@@ -303,7 +303,7 @@ function seekFromEvent(e) {
   audioEl.currentTime = frac * dur;
   drawWaveform(state.lastProgress || 0);
   updatePlayTime();
-  highlightWordAt(audioEl.currentTime);
+  highlightWordAt(audioEl.currentTime, true); // Sprung: einmal zur Textstelle
 }
 
 let scrubbing = false;
@@ -333,17 +333,22 @@ els.waveform.addEventListener("pointercancel", endScrub);
 let wordSpans = [];
 let lastLitSpan = null;
 
-function highlightWordAt(t) {
+// force: einmalig zur Stelle springen (z. B. nach Waveform-Klick), auch wenn
+// das laufende Mitscrollen aus oder pausiert ist.
+function highlightWordAt(t, force = false) {
   if (!wordSpans.length) return;
   let lit = null;
   for (const s of wordSpans) {
     if (t >= s._start && t < s._end) { lit = s; break; }
   }
-  if (lit === lastLitSpan) return;
+  if (lit === lastLitSpan) {
+    if (lit && force) scrollSpanIntoView(lit, true);
+    return;
+  }
   if (lastLitSpan) lastLitSpan.classList.remove("playing");
   if (lit) {
     lit.classList.add("playing");
-    scrollSpanIntoView(lit);
+    scrollSpanIntoView(lit, force);
   }
   lastLitSpan = lit;
 }
@@ -363,8 +368,15 @@ for (const ev of ["wheel", "touchmove"]) {
 }
 els.transcript.addEventListener("keydown", pauseAutoScroll);
 
-function scrollSpanIntoView(span) {
-  if (!autoScrollAllowed()) return;
+// Haken frisch gesetzt = klarer Wunsch: Pause aufheben und sofort nachziehen.
+$("#opt-autoscroll").addEventListener("change", (e) => {
+  if (!e.target.checked) return;
+  autoScrollPausedUntil = 0;
+  if (lastLitSpan) scrollSpanIntoView(lastLitSpan, true);
+});
+
+function scrollSpanIntoView(span, force = false) {
+  if (!force && !autoScrollAllowed()) return;
   const el = els.transcript;
   const cr = el.getBoundingClientRect();
   const sr = span.getBoundingClientRect();
@@ -1006,7 +1018,7 @@ function resetResult() {
   $("#speaker-names").hidden = true;
   els.fileError.hidden = true;
   sumOutput.hidden = true;
-  sumOutput.textContent = "";
+  renderSummary("", { plain: true });
   $("#sum-actions").hidden = true;
 }
 
@@ -1016,6 +1028,138 @@ const sumModel = $("#sum-model");
 const btnSummarize = $("#btn-summarize");
 const sumOutput = $("#summary-output");
 let summarizing = false;
+let sumMarkdown = ""; // Rohtext der Zusammenfassung (Quelle für Rendering & Copy)
+
+/* ── Mini-Markdown → HTML (kein externes Paket nötig) ───── */
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function mdInline(s) {
+  const codes = [];
+  let t = escapeHtml(s).replace(/`([^`]+)`/g, (_, c) => `\u0001${codes.push(c) - 1}\u0001`);
+  t = t
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/(^|[^_\w])_([^_\n]+)_/g, "$1<em>$2</em>")
+    .replace(/~~([^~]+)~~/g, "<del>$1</del>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  return t.replace(/\u0001(\d+)\u0001/g, (_, i) => `<code>${codes[i]}</code>`);
+}
+
+const RE_LIST = /^\s*([-*+]|\d+[.)])\s+(.*)$/;
+const RE_TABLE_SEP = /^\s*\|?[\s:|-]*-[\s:|-]*$/;
+
+function splitRow(line) {
+  return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+}
+
+function renderMarkdown(md) {
+  const lines = md.replace(/\r\n?/g, "\n").split("\n");
+  const out = [];
+  let para = [];
+  const flushPara = () => {
+    if (para.length) out.push(`<p>${mdInline(para.join(" "))}</p>`);
+    para = [];
+  };
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^\s*```/.test(line)) {
+      flushPara();
+      const body = [];
+      i++;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) body.push(lines[i++]);
+      i++;
+      out.push(`<pre><code>${escapeHtml(body.join("\n"))}</code></pre>`);
+      continue;
+    }
+    if (!line.trim()) { flushPara(); i++; continue; }
+    const h = line.match(/^\s*(#{1,6})\s+(.*)$/);
+    if (h) {
+      flushPara();
+      const lvl = h[1].length;
+      out.push(`<h${lvl}>${mdInline(h[2].replace(/\s*#+\s*$/, ""))}</h${lvl}>`);
+      i++;
+      continue;
+    }
+    if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(line)) { flushPara(); out.push("<hr>"); i++; continue; }
+    if (line.includes("|") && i + 1 < lines.length && RE_TABLE_SEP.test(lines[i + 1])) {
+      flushPara();
+      const head = splitRow(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) rows.push(splitRow(lines[i++]));
+      const th = head.map((c) => `<th>${mdInline(c)}</th>`).join("");
+      const body = rows
+        .map((r) => `<tr>${r.map((c) => `<td>${mdInline(c)}</td>`).join("")}</tr>`)
+        .join("");
+      out.push(`<table><thead><tr>${th}</tr></thead><tbody>${body}</tbody></table>`);
+      continue;
+    }
+    if (/^\s*>/.test(line)) {
+      flushPara();
+      const body = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) body.push(lines[i++].replace(/^\s*>\s?/, ""));
+      out.push(`<blockquote>${renderMarkdown(body.join("\n"))}</blockquote>`);
+      continue;
+    }
+    const li = line.match(RE_LIST);
+    if (li) {
+      flushPara();
+      const ordered = /\d/.test(li[1]);
+      const tag = ordered ? "ol" : "ul";
+      const items = [];
+      while (i < lines.length) {
+        const m = lines[i].match(RE_LIST);
+        if (m) {
+          if (/\d/.test(m[1]) !== ordered) break; // Listentyp wechselt
+          items.push(m[2]);
+          i++;
+          continue;
+        }
+        // Eingerückte Folgezeile gehört zum letzten Punkt.
+        if (items.length && lines[i].trim() && /^\s{2,}/.test(lines[i])) {
+          items[items.length - 1] += ` ${lines[i].trim()}`;
+          i++;
+          continue;
+        }
+        break;
+      }
+      out.push(`<${tag}>${items.map((t) => `<li>${mdInline(t)}</li>`).join("")}</${tag}>`);
+      continue;
+    }
+    para.push(line.trim());
+    i++;
+  }
+  flushPara();
+  return out.join("\n");
+}
+
+/* Kopiert formatiert (text/html) mit Markdown als Plaintext-Fallback, damit
+   Word/Outlook die Formatierung übernehmen und Editoren den Rohtext. */
+async function copyRich(html, text) {
+  try {
+    if (window.ClipboardItem && navigator.clipboard.write) {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/html": new Blob([html], { type: "text/html" }),
+          "text/plain": new Blob([text], { type: "text/plain" }),
+        }),
+      ]);
+      return;
+    }
+  } catch { /* fällt unten auf Plaintext zurück */ }
+  await navigator.clipboard.writeText(text);
+}
+
+function renderSummary(md, { plain = false } = {}) {
+  sumMarkdown = md;
+  sumOutput.classList.toggle("md", !plain);
+  if (plain) sumOutput.textContent = md;
+  else sumOutput.innerHTML = renderMarkdown(md);
+}
 
 async function loadSummaryModels() {
   try {
@@ -1052,13 +1196,13 @@ async function runSummary() {
   btnSummarize.disabled = true;
   btnSummarize.textContent = "Fasst zusammen…";
   sumOutput.hidden = false;
-  sumOutput.textContent = "";
+  renderSummary("", { plain: true });
   $("#sum-actions").hidden = true;
   $("#sum-stats").textContent = "";
   let raw = "";
   let thinkChars = 0;
   log(`Zusammenfassung gestartet (${sumModel.value}, ${text.length} Zeichen Transkript).`);
-  sumOutput.textContent = "(Modell wird geladen…)";
+  renderSummary("(Modell wird geladen…)", { plain: true });
   try {
     const res = await fetch("/v1/summary", {
       method: "POST",
@@ -1092,12 +1236,15 @@ async function runSummary() {
           raw += ev.text;
           // Reasoning models wrap their thinking in <think>…</think> — hide it.
           const visible = raw.replace(/<think>[\s\S]*?(<\/think>|$)/, "").trimStart();
-          sumOutput.textContent = visible || "(Modell denkt nach…)";
+          // Während des Streams Rohtext zeigen (halbe Markdown-Zeilen sähen
+          // sonst zappelig aus), gerendert wird am Ende.
+          renderSummary(visible || "(Modell denkt nach…)", { plain: true });
           sumOutput.scrollTop = sumOutput.scrollHeight;
         } else if (ev.type === "thinking") {
           thinkChars += ev.text.length;
-          if (!raw) sumOutput.textContent = `(Modell denkt nach… ${thinkChars} Zeichen)`;
+          if (!raw) renderSummary(`(Modell denkt nach… ${thinkChars} Zeichen)`, { plain: true });
         } else if (ev.type === "done") {
+          renderSummary(raw.replace(/<think>[\s\S]*?(<\/think>|$)/, "").trim());
           $("#sum-actions").hidden = false;
           $("#sum-stats").textContent =
             (ev.duration_seconds ? `${ev.duration_seconds} s · ` : "") + (ev.model || "");
@@ -1110,7 +1257,7 @@ async function runSummary() {
     if (failed) throw new Error(failed);
   } catch (err) {
     sumOutput.hidden = false;
-    sumOutput.textContent += `\n[Fehler: ${err.message}]`;
+    renderSummary(`${sumMarkdown}\n\n[Fehler: ${err.message}]`, { plain: true });
     log(`Zusammenfassung fehlgeschlagen: ${err.message}`, "err");
   } finally {
     summarizing = false;
@@ -1446,7 +1593,7 @@ btnSummarize.addEventListener("click", () => {
   runSummary().catch((e) => log(`Zusammenfassung: ${e.message}`, "err"));
 });
 $("#btn-sum-copy").addEventListener("click", async () => {
-  await navigator.clipboard.writeText(sumOutput.textContent);
+  await copyRich(renderMarkdown(sumMarkdown), sumMarkdown);
   $("#btn-sum-copy").textContent = "Kopiert ✓";
   setTimeout(() => { $("#btn-sum-copy").textContent = "Zusammenfassung kopieren"; }, 1500);
 });
