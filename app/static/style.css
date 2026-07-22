@@ -412,6 +412,17 @@ footer a { color: var(--accent); }
   padding: 0.45rem 0.6rem;
   resize: vertical;
 }
+/* Bedienleiste über dem Transkript (Play/Pause ohne Hochscrollen). */
+.tr-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+  flex-wrap: wrap;
+}
+.tr-controls .check { margin-left: auto; }
+.log-badge { color: var(--text-2); font-size: 0.8em; font-weight: 400; }
+
 .sum-output { margin: 1rem; max-height: 20rem; }
 
 /* Gerendertes Markdown der Zusammenfassung. */

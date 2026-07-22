@@ -189,10 +189,15 @@
   <!-- ── 4 · Ergebnis ───────────────────────────────────────── -->
   <section class="card" id="card-result" hidden>
     <h2><span class="step-no">4</span> Transkript</h2>
-    <label class="check">
-      <input type="checkbox" id="opt-autoscroll">
-      Transkript beim Abspielen mitscrollen
-    </label>
+    <div class="tr-controls">
+      <button type="button" class="btn-ghost btn-play" id="btn-play-tr" disabled
+              aria-label="Abspielen">&#9654;</button>
+      <span id="play-time-tr" class="mono muted"></span>
+      <label class="check">
+        <input type="checkbox" id="opt-autoscroll">
+        Mitscrollen
+      </label>
+    </div>
     <div class="transcript" id="transcript" aria-live="polite"></div>
     <div class="speaker-names" id="speaker-names" hidden></div>
     <div class="result-actions">
@@ -250,7 +255,7 @@
 
   <!-- ── Protokoll ──────────────────────────────────────────── -->
   <details class="logbox" id="logbox">
-    <summary>Technisches Protokoll</summary>
+    <summary>Technisches Protokoll<span class="log-badge mono" id="log-badge"></span></summary>
     <pre id="log" class="mono"></pre>
   </details>
 </main>

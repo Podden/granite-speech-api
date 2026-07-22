@@ -58,14 +58,61 @@ const state = {
 
 /* ── Logging ────────────────────────────────────────────── */
 
-function log(msg, cls) {
-  const t = new Date().toLocaleTimeString("de-DE", { hour12: false });
-  const line = document.createElement("span");
-  if (cls) line.className = cls;
-  line.textContent = `[${t}] ${msg}\n`;
-  els.log.appendChild(line);
+/* Das Protokoll puffert nur — gerendert wird erst, wenn es aufgeklappt ist.
+   Zugeklappt kostet ein Log-Eintrag damit nichts außer einem Array-Push. */
+const LOG_MAX = 4000;      // Ringpuffer
+const LOG_DOM_MAX = 1500;  // so viele Zeilen landen höchstens im DOM
+const logBuf = [];
+let logDrawn = 0;
+let logErrors = 0;
+const logBox = $("#logbox");
+const logBadge = $("#log-badge");
+
+function logLine(e) {
+  return `[${e.t}] ${e.msg}\n`;
+}
+
+function flushLog() {
+  if (logDrawn > logBuf.length) logDrawn = 0; // Puffer wurde gekürzt
+  if (logDrawn === 0) els.log.textContent = "";
+  const start = Math.max(logDrawn, logBuf.length - LOG_DOM_MAX);
+  const frag = document.createDocumentFragment();
+  for (let i = start; i < logBuf.length; i++) {
+    const e = logBuf[i];
+    const span = document.createElement("span");
+    if (e.cls) span.className = e.cls;
+    span.textContent = logLine(e);
+    frag.appendChild(span);
+  }
+  els.log.appendChild(frag);
+  logDrawn = logBuf.length;
   els.log.scrollTop = els.log.scrollHeight;
 }
+
+function updateLogBadge() {
+  logBadge.textContent =
+    ` ${logBuf.length} Zeilen` + (logErrors ? ` · ${logErrors} Fehler` : "");
+}
+
+function log(msg, cls) {
+  logBuf.push({ t: new Date().toLocaleTimeString("de-DE", { hour12: false }), msg, cls });
+  if (logBuf.length > LOG_MAX) {
+    logBuf.splice(0, logBuf.length - LOG_MAX);
+    logDrawn = 0;
+  }
+  if (cls === "err") logErrors++;
+  updateLogBadge();
+  if (logBox.open) flushLog();
+}
+
+/* Rohdaten eines Schrittes — bewusst ungefiltert, nur längenbegrenzt. */
+function logRaw(label, data, cls) {
+  let s = typeof data === "string" ? data : JSON.stringify(data);
+  if (s && s.length > 2000) s = `${s.slice(0, 2000)}… (${s.length} Zeichen)`;
+  log(`${label}: ${s}`, cls);
+}
+
+logBox.addEventListener("toggle", () => { if (logBox.open) flushLog(); });
 
 /* ── Health ─────────────────────────────────────────────── */
 
@@ -234,6 +281,10 @@ function encodeWav(samples, sampleRate) {
 const audioEl = $("#audio-player");
 const btnPlay = $("#btn-play");
 const playTime = $("#play-time");
+// Zweiter Satz Bedienelemente direkt am Transkript, damit man zum
+// Pausieren nicht zur Waveform hochscrollen muss.
+const btnPlayTr = $("#btn-play-tr");
+const playTimeTr = $("#play-time-tr");
 let playheadRaf = 0;
 
 function setupPlayer() {
@@ -246,6 +297,7 @@ function setupPlayer() {
   audioEl.src = state.audioUrl;
   btnPlay.hidden = false;
   playTime.hidden = false;
+  btnPlayTr.disabled = false;
   updatePlayTime();
 }
 
@@ -258,25 +310,47 @@ function fmtClock(t) {
 
 function updatePlayTime() {
   const dur = state.duration || audioEl.duration || 0;
-  playTime.textContent = `${fmtClock(audioEl.currentTime)} / ${fmtClock(dur)}`;
+  const txt = `${fmtClock(audioEl.currentTime)} / ${fmtClock(dur)}`;
+  playTime.textContent = txt;
+  playTimeTr.textContent = txt;
 }
 
+function setPlayIcon(playing) {
+  const icon = playing ? "&#10073;&#10073;" : "&#9654;";
+  const label = playing ? "Pause" : "Abspielen";
+  for (const b of [btnPlay, btnPlayTr]) {
+    b.innerHTML = icon;
+    b.setAttribute("aria-label", label);
+  }
+}
+
+function togglePlay() {
+  if (!audioEl.src) return;
+  if (audioEl.paused) audioEl.play().catch(() => {}); else audioEl.pause();
+}
+
+let lastHeadX = -1;
 function playheadLoop() {
-  drawWaveform(state.lastProgress || 0);
-  updatePlayTime();
-  highlightWordAt(audioEl.currentTime);
+  // Nur neu zeichnen, wenn der Playhead wirklich ein Pixel weiter ist.
+  const dur = state.duration || audioEl.duration;
+  const x = dur ? Math.round((audioEl.currentTime / dur) * els.waveform.width) : -1;
+  if (x !== lastHeadX) {
+    lastHeadX = x;
+    drawWaveform(state.lastProgress || 0);
+    updatePlayTime();
+    highlightWordAt(audioEl.currentTime);
+  }
   if (!audioEl.paused) playheadRaf = requestAnimationFrame(playheadLoop);
 }
 
-btnPlay.addEventListener("click", () => {
-  if (audioEl.paused) audioEl.play(); else audioEl.pause();
-});
+btnPlay.addEventListener("click", togglePlay);
+btnPlayTr.addEventListener("click", togglePlay);
 audioEl.addEventListener("play", () => {
-  btnPlay.innerHTML = "&#10073;&#10073;";
+  setPlayIcon(true);
   playheadRaf = requestAnimationFrame(playheadLoop);
 });
 audioEl.addEventListener("pause", () => {
-  btnPlay.innerHTML = "&#9654;";
+  setPlayIcon(false);
   cancelAnimationFrame(playheadRaf);
   drawWaveform(state.lastProgress || 0);
   updatePlayTime();
@@ -292,6 +366,7 @@ audioEl.addEventListener("timeupdate", () => {
 audioEl.addEventListener("error", () => {
   btnPlay.hidden = true;
   playTime.hidden = true;
+  btnPlayTr.disabled = true;
   log("Wiedergabe im Browser nicht möglich (Format).", "warn");
 });
 
@@ -337,9 +412,14 @@ let lastLitSpan = null;
 // das laufende Mitscrollen aus oder pausiert ist.
 function highlightWordAt(t, force = false) {
   if (!wordSpans.length) return;
-  let lit = null;
-  for (const s of wordSpans) {
-    if (t >= s._start && t < s._end) { lit = s; break; }
+  // Binäre Suche — die lineare Suche lief pro Frame über alle Wörter.
+  let lo = 0, hi = wordSpans.length - 1, lit = null;
+  while (lo <= hi) {
+    const m = (lo + hi) >> 1;
+    const s = wordSpans[m];
+    if (t < s._start) hi = m - 1;
+    else if (t >= s._end) lo = m + 1;
+    else { lit = s; break; }
   }
   if (lit === lastLitSpan) {
     if (lit && force) scrollSpanIntoView(lit, true);
@@ -472,15 +552,32 @@ function computePeaks(samples, buckets) {
   return peaks;
 }
 
+/* Farben einmal aus dem Stylesheet holen — getComputedStyle pro Balken
+   erzwang bei jedem Frame einen Style-Recalc und machte das Scrollen zäh. */
+let waveColors = null;
+function getWaveColors() {
+  if (waveColors) return waveColors;
+  const css = getComputedStyle(document.documentElement);
+  waveColors = {
+    wave: css.getPropertyValue("--wave").trim(),
+    done: css.getPropertyValue("--wave-done").trim(),
+    played: css.getPropertyValue("--wave-played").trim(),
+    head: css.getPropertyValue("--err").trim() || "#da1e28",
+  };
+  return waveColors;
+}
+window.matchMedia?.("(prefers-color-scheme: dark)")
+  .addEventListener?.("change", () => { waveColors = null; });
+
 function drawWaveform(progress) {
   state.lastProgress = progress || 0;
   const canvas = els.waveform;
   const ctx = canvas.getContext("2d");
-  const css = getComputedStyle(document.documentElement);
+  const col = getWaveColors();
   const W = canvas.width, H = canvas.height, mid = H / 2;
   ctx.clearRect(0, 0, W, H);
   if (!state.peaks) {
-    ctx.fillStyle = css.getPropertyValue("--wave").trim();
+    ctx.fillStyle = col.wave;
     ctx.fillRect(0, mid - 1, W, 2);
   } else {
     const n = state.peaks.length;
@@ -489,12 +586,13 @@ function drawWaveform(progress) {
     const dur0 = state.duration || audioEl.duration;
     const playedX = dur0 && audioEl.currentTime > 0
       ? (audioEl.currentTime / dur0) * W : 0;
+    let cur = null;
     for (let i = 0; i < n; i++) {
       const x = i * bw;
       const h = Math.max(2, state.peaks[i] * (H - 8));
       // Played portion (teal) wins over transcription progress (blue).
-      const varName = x < playedX ? "--wave-played" : (x < doneX ? "--wave-done" : "--wave");
-      ctx.fillStyle = css.getPropertyValue(varName).trim();
+      const c = x < playedX ? col.played : (x < doneX ? col.done : col.wave);
+      if (c !== cur) { ctx.fillStyle = c; cur = c; }
       ctx.fillRect(x, mid - h / 2, Math.max(1, bw - 1), h);
     }
   }
@@ -502,7 +600,7 @@ function drawWaveform(progress) {
   const dur = state.duration || audioEl.duration;
   if (dur && audioEl.currentTime > 0) {
     const x = (audioEl.currentTime / dur) * W;
-    ctx.fillStyle = css.getPropertyValue("--err").trim() || "#da1e28";
+    ctx.fillStyle = col.head;
     ctx.fillRect(x - 1, 0, 2, H);
   }
 }
@@ -539,6 +637,7 @@ function startQueuePolling() {
     try {
       const h = await (await fetch("/health")).json();
       const q = h.queue;
+      logRaw("< queue", q || h);
       if (!q || q.active_jobs <= 1) return;
       const rtf = q.rtf || 10;
       // Oldest jobs first; our own job is the newest → everything else is ahead.
@@ -622,6 +721,11 @@ function beginTranscription() {
 
   const fd = buildFormData();
   log(`Starte Upload: ${state.uploadName} (${fmtSize(state.uploadBlob.size)})`);
+  const fields = [];
+  for (const [k, v] of fd.entries()) {
+    fields.push(`${k}=${v instanceof Blob ? `<blob ${v.size} B, ${v.type || "?"}>` : v}`);
+  }
+  logRaw("POST /v1/audio/transcriptions", fields.join(" · "));
 
   const xhr = new XMLHttpRequest();
   state.xhr = xhr;
@@ -662,9 +766,24 @@ function beginTranscription() {
   xhr.send(fd);
 }
 
+let deltaChars = 0;
+let deltaCount = 0;
+
+function flushDeltaLog() {
+  if (!deltaCount) return;
+  log(`< delta ×${deltaCount} (${deltaChars} Zeichen Token-Stream)`);
+  deltaChars = 0;
+  deltaCount = 0;
+}
+
 function handleEvent(line) {
   let ev;
   try { ev = JSON.parse(line); } catch { log(`Unlesbares Server-Event: ${line}`, "warn"); return; }
+  // Rohes Event ins Protokoll — außer dem Token-Stream, der wird gebündelt.
+  if (ev.type !== "delta") {
+    flushDeltaLog();
+    logRaw("< event", line, ev.type === "error" ? "err" : undefined);
+  }
   switch (ev.type) {
     case "duration":
       if (!state.duration) state.duration = ev.duration;
@@ -706,6 +825,8 @@ function handleEvent(line) {
     case "delta":
       // Token-level live text of the chunk currently being decoded.
       state.liveText += ev.text;
+      deltaChars += ev.text.length;
+      deltaCount++;
       scheduleLiveRender();
       break;
     case "partial":
@@ -727,13 +848,16 @@ function handleEvent(line) {
       fail(`Server-Fehler: ${ev.message}`);
       break;
     default:
-      log(`Event: ${line}`);
+      break; // Rohzeile steht bereits im Protokoll
   }
 }
 
 function onRequestDone(xhr) {
   state.xhr = null;
   stopQueuePolling();
+  flushDeltaLog();
+  logRaw("HTTP", `${xhr.status} ${xhr.statusText || ""} · ${xhr.responseText.length} B NDJSON`,
+    xhr.status === 200 ? undefined : "err");
   if (xhr.status !== 200) {
     let msg = `HTTP ${xhr.status}`;
     try { msg = JSON.parse(xhr.responseText).detail || msg; } catch { /* keep */ }
@@ -1322,7 +1446,7 @@ async function sendFeedback() {
       segments: state.segments.length,
       status: els.statusText.textContent.trim() || null,
       settings: settingsUsed,
-      ui_log: els.log.textContent.split("\n").filter(Boolean).slice(-150),
+      ui_log: logBuf.slice(-200).map((e) => `[${e.t}] ${e.msg}`),
       actions: trace.slice(-200),
       browser: {
         user_agent: navigator.userAgent,
