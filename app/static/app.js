@@ -343,9 +343,31 @@ function highlightWordAt(t) {
   if (lastLitSpan) lastLitSpan.classList.remove("playing");
   if (lit) {
     lit.classList.add("playing");
-    lit.scrollIntoView({ block: "nearest" });
+    scrollSpanIntoView(lit);
   }
   lastLitSpan = lit;
+}
+
+/* Auto-Scroll darf nur den Transkript-Kasten bewegen (nie die Seite) und
+   pausiert, sobald der Nutzer selbst scrollt. */
+const AUTOSCROLL_PAUSE_MS = 5000;
+let autoScrollPausedUntil = 0;
+
+function pauseAutoScroll() { autoScrollPausedUntil = performance.now() + AUTOSCROLL_PAUSE_MS; }
+function autoScrollAllowed() { return performance.now() >= autoScrollPausedUntil; }
+
+for (const ev of ["wheel", "touchmove"]) {
+  window.addEventListener(ev, pauseAutoScroll, { passive: true });
+}
+els.transcript.addEventListener("keydown", pauseAutoScroll);
+
+function scrollSpanIntoView(span) {
+  if (!autoScrollAllowed()) return;
+  const el = els.transcript;
+  const cr = el.getBoundingClientRect();
+  const sr = span.getBoundingClientRect();
+  if (sr.top < cr.top) el.scrollTop += sr.top - cr.top - 8;
+  else if (sr.bottom > cr.bottom) el.scrollTop += sr.bottom - cr.bottom + 8;
 }
 
 /* Klick/Halten im Transkript. Maus bewegen bleibt Textmarkierung —
@@ -721,6 +743,7 @@ function onRequestDone(xhr) {
   renderTranscript();
   renderSpeakerEditor();
   log(`Transkription abgeschlossen in ${secs} s (${state.segments.length} Segmente).`);
+  saveSession();
   els.cardResult.scrollIntoView({ behavior: "smooth", block: "nearest" });
   state.finishCb?.resolve();
   state.finishCb = null;
@@ -801,6 +824,7 @@ function renderSpeakerEditor() {
       if (v) state.speakerNames[spk] = v;
       else delete state.speakerNames[spk];
       renderTranscript();
+      saveSession();
     });
     box.appendChild(inp);
   }
@@ -854,7 +878,7 @@ function renderTranscript() {
   } else {
     el.textContent = state.resultText;
   }
-  el.scrollTop = el.scrollHeight;
+  if (autoScrollAllowed()) el.scrollTop = el.scrollHeight;
 }
 
 function plainTextOf(segments, resultText) {
@@ -923,7 +947,49 @@ function selectedFormats() {
   return fmts.length ? fmts : ["txt"];
 }
 
+/* Letztes Ergebnis übersteht einen Reload — nur der Text, die Audiodatei
+   kann der Browser nicht wiederherstellen. */
+const SESSION_KEY = "gsa:last-result";
+
+function saveSession() {
+  try {
+    const json = JSON.stringify({
+      v: 1,
+      savedAt: Date.now(),
+      segments: state.segments,
+      resultText: state.resultText,
+      speakerNames: state.speakerNames || {},
+      duration: state.duration,
+      processingSecs: state.processingSecs,
+      fileName: state.file?.name || state.uploadName || null,
+    });
+    if (json.length > 4_000_000) return; // localStorage-Quota nicht sprengen
+    localStorage.setItem(SESSION_KEY, json);
+  } catch { /* Quota / privater Modus — Persistenz ist optional */ }
+}
+
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); } catch { /* egal */ }
+}
+
+function restoreSession() {
+  let data = null;
+  try { data = JSON.parse(localStorage.getItem(SESSION_KEY) || "null"); } catch { return; }
+  if (!data || data.v !== 1) return;
+  if (!data.segments?.length && !data.resultText) return;
+  state.segments = data.segments || [];
+  state.resultText = data.resultText || "";
+  state.speakerNames = data.speakerNames || {};
+  state.processingSecs = data.processingSecs ?? null;
+  els.cardResult.hidden = false;
+  renderTranscript();
+  renderSpeakerEditor();
+  const when = new Date(data.savedAt).toLocaleString("de-DE", { hour12: false });
+  log(`Letztes Transkript wiederhergestellt (${data.fileName || "unbenannt"}, ${when}). Für die Wiedergabe die Audiodatei erneut wählen.`);
+}
+
 function resetResult() {
+  clearSession();
   els.cardResult.hidden = true;
   els.cardStatus.hidden = true;
   els.btnCancel.hidden = false;
@@ -1385,3 +1451,4 @@ loadSummaryModels();
 refreshHealth();
 setInterval(refreshHealth, 30000);
 log("UI bereit.");
+restoreSession();
