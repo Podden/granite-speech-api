@@ -348,6 +348,75 @@ function highlightWordAt(t) {
   lastLitSpan = lit;
 }
 
+/* Klick/Halten im Transkript. Maus bewegen bleibt Textmarkierung —
+   erst 200 ms Halten ohne Bewegung schaltet auf Vorhören um. */
+const TEXT_HOLD_MS = 200;
+const TEXT_MOVE_PX = 4;
+let textPress = null;
+
+function wordSpanFromPoint(e) {
+  const t = document.elementFromPoint(e.clientX, e.clientY);
+  return t && t.classList && t.classList.contains("w") ? t : null;
+}
+
+function seekToSpan(span) {
+  audioEl.currentTime = span._start;
+  drawWaveform(state.lastProgress || 0);
+  updatePlayTime();
+  highlightWordAt(span._start);
+}
+
+function playFromSpan(span) {
+  seekToSpan(span);
+  if (audioEl.paused) audioEl.play().catch(() => {});
+}
+
+function cancelTextPress() {
+  if (!textPress) return;
+  clearTimeout(textPress.timer);
+  textPress = null;
+}
+
+els.transcript.addEventListener("pointerdown", (e) => {
+  cancelTextPress();
+  const span = wordSpanFromPoint(e);
+  if (!span || !audioEl.src) return;
+  // Kein preventDefault: die Textmarkierung soll normal funktionieren.
+  textPress = {
+    span,
+    x: e.clientX,
+    y: e.clientY,
+    wasPlaying: !audioEl.paused,
+    held: false,
+    timer: setTimeout(() => {
+      if (!textPress) return;
+      textPress.held = true;
+      playFromSpan(textPress.span);
+    }, TEXT_HOLD_MS),
+  };
+});
+
+els.transcript.addEventListener("pointermove", (e) => {
+  if (!textPress || textPress.held) return;
+  // Bewegung vor Ablauf der Haltezeit → der Nutzer markiert Text.
+  if (Math.abs(e.clientX - textPress.x) > TEXT_MOVE_PX ||
+      Math.abs(e.clientY - textPress.y) > TEXT_MOVE_PX) cancelTextPress();
+});
+
+function endTextPress(e) {
+  if (!textPress) return;
+  if (textPress.held) {
+    // Vorhören beendet: zurück in den Zustand von vor dem Halten.
+    if (!textPress.wasPlaying) audioEl.pause();
+  } else if (wordSpanFromPoint(e) === textPress.span) {
+    // Kurzer Klick: ab dieser Stelle abspielen, egal ob Play oder Pause aktiv war.
+    playFromSpan(textPress.span);
+  }
+  cancelTextPress();
+}
+els.transcript.addEventListener("pointerup", endTextPress);
+els.transcript.addEventListener("pointercancel", cancelTextPress);
+
 /* ── Waveform ───────────────────────────────────────────── */
 
 function computePeaks(samples, buckets) {
@@ -765,7 +834,6 @@ function renderTranscript() {
           span.textContent = w.word + " ";
           span._start = w.start;
           span._end = w.end;
-          span.addEventListener("click", () => { audioEl.currentTime = w.start; drawWaveform(state.lastProgress); updatePlayTime(); highlightWordAt(w.start); });
           el.appendChild(span);
           wordSpans.push(span);
         }
