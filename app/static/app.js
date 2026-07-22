@@ -348,13 +348,15 @@ function highlightWordAt(t) {
   lastLitSpan = lit;
 }
 
-/* Auto-Scroll darf nur den Transkript-Kasten bewegen (nie die Seite) und
-   pausiert, sobald der Nutzer selbst scrollt. */
+/* Auto-Scroll ist optional (Checkbox, Default aus) und bewegt nur den
+   Transkript-Kasten, nie die Seite. Eigenes Scrollen pausiert es kurz. */
 const AUTOSCROLL_PAUSE_MS = 5000;
 let autoScrollPausedUntil = 0;
 
 function pauseAutoScroll() { autoScrollPausedUntil = performance.now() + AUTOSCROLL_PAUSE_MS; }
-function autoScrollAllowed() { return performance.now() >= autoScrollPausedUntil; }
+function autoScrollAllowed() {
+  return $("#opt-autoscroll").checked && performance.now() >= autoScrollPausedUntil;
+}
 
 for (const ev of ["wheel", "touchmove"]) {
   window.addEventListener(ev, pauseAutoScroll, { passive: true });
@@ -840,6 +842,7 @@ function renderTranscript() {
   el.textContent = "";
   wordSpans = [];
   lastLitSpan = null;
+  const isLive = !state.segments.length && (state.partials.length > 0 || !!state.liveText);
   if (state.segments.length) {
     let lastSpeaker = null;
     for (const seg of state.segments) {
@@ -878,7 +881,8 @@ function renderTranscript() {
   } else {
     el.textContent = state.resultText;
   }
-  if (autoScrollAllowed()) el.scrollTop = el.scrollHeight;
+  // Live-Vorschau folgt immer, das fertige Transkript nur mit Auto-Scroll.
+  if (isLive || autoScrollAllowed()) el.scrollTop = el.scrollHeight;
 }
 
 function plainTextOf(segments, resultText) {
