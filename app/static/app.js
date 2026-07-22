@@ -471,8 +471,12 @@ function scrollSpanIntoView(span, force = false) {
   const el = els.transcript;
   const cr = el.getBoundingClientRect();
   const sr = span.getBoundingClientRect();
-  if (sr.top < cr.top) el.scrollTop += sr.top - cr.top - 8;
-  else if (sr.bottom > cr.bottom) el.scrollTop += sr.bottom - cr.bottom + 8;
+  // Wort mittig halten statt es nur knapp ins Sichtfeld zu schieben — am
+  // Anfang und Ende des Transkripts begrenzt der Clamp das automatisch.
+  const delta = (sr.top + sr.height / 2) - (cr.top + cr.height / 2);
+  const max = el.scrollHeight - el.clientHeight;
+  const target = Math.max(0, Math.min(max, el.scrollTop + delta));
+  if (Math.abs(target - el.scrollTop) > 2) el.scrollTop = target;
 }
 
 /* Klick/Halten im Transkript. Maus bewegen bleibt Textmarkierung —
