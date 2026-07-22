@@ -78,10 +78,28 @@ app.add_middleware(
 
 app.include_router(api_router)
 
+class UiStaticFiles(StaticFiles):
+    """Serve the UI without heuristic caching.
+
+    Without ``Cache-Control`` browsers keep guessing a freshness lifetime from
+    ``Last-Modified``, so a deployed HTML/JS/CSS change can be mixed with stale
+    assets for hours. ``no-cache`` still allows 304s via ETag; fonts never
+    change under the same name and stay cacheable.
+    """
+
+    def file_response(self, full_path, stat_result, scope, status_code=200):
+        resp = super().file_response(full_path, stat_result, scope, status_code)
+        if str(full_path).endswith((".woff2", ".woff", ".ttf")):
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 # Browser upload UI (served at /ui, / redirects there).
 app.mount(
     "/ui",
-    StaticFiles(directory=Path(__file__).parent / "static", html=True),
+    UiStaticFiles(directory=Path(__file__).parent / "static", html=True),
     name="ui",
 )
 
