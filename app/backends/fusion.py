@@ -25,7 +25,12 @@ import torch
 from app.audio import TARGET_SR, load_audio_bytes
 from app.backends.base import ASRBackend
 from app.backends.cohere_asr import SUPPORTED_LANGUAGES as COHERE_LANGUAGES
-from app.backends.granite import _plan_windows, _speaker_runs_to_segments
+from app.backends.granite import (
+    _collapse_repeats,
+    _plan_windows,
+    _speaker_runs_to_segments,
+)
+from app.config import settings
 from app.schema import TranscriptionRequest, TranscriptionSegment, TranscriptionWord
 
 log = logging.getLogger(__name__)
@@ -216,6 +221,12 @@ class FusionBackend(ASRBackend):
         al_proc, al_model = self._aligner_processor, self._aligner_model
         loop = asyncio.get_running_loop()
 
+        gen_extra: dict[str, Any] = {}
+        if settings.repetition_penalty != 1.0:
+            gen_extra["repetition_penalty"] = settings.repetition_penalty
+        if settings.no_repeat_ngram_size > 0:
+            gen_extra["no_repeat_ngram_size"] = settings.no_repeat_ngram_size
+
         windows = _plan_windows(wav, duration, MAX_CHUNK_SECONDS, TARGET_CHUNK_SECONDS)
         words: list[TranscriptionWord] = []
         done = 0.0
@@ -231,11 +242,15 @@ class FusionBackend(ASRBackend):
                         language=lang,
                     ).to(asr_model.device, dtype=asr_model.dtype)
                     with torch.inference_mode():
-                        out = asr_model.generate(**inputs, max_new_tokens=512)
+                        out = asr_model.generate(
+                            **inputs, max_new_tokens=512, **gen_extra
+                        )
                     decoded = asr_proc.decode(out, skip_special_tokens=True)
                     if isinstance(decoded, (list, tuple)):
                         decoded = " ".join(str(p) for p in decoded)
-                    text = decoded.strip()
+                    # Cohere still loops occasionally despite the decode-time
+                    # guards above — collapse whatever slipped through.
+                    text = _collapse_repeats(decoded).strip()
                     if not text:
                         return "", []
 

@@ -267,6 +267,9 @@ class GraniteBackend(ASRBackend):
             piece = wav[:, int(t0 * TARGET_SR): int(t1 * TARGET_SR)]
             text = await self._run(
                 piece, prompt, max_new_tokens=_token_budget(t1 - t0, "asr"),
+                # Incremental callers send the whole block plus its decoded text;
+                # the prefix belongs to the first window only.
+                prefix_text=req.prefix_text if t0 == windows[0][0] else None,
                 delta_cb=delta_cb,
             )
             text = _collapse_repeats(text).strip()
@@ -446,6 +449,8 @@ class GraniteBackend(ASRBackend):
         gen_extra: dict[str, Any] = {}
         if settings.repetition_penalty != 1.0:
             gen_extra["repetition_penalty"] = settings.repetition_penalty
+        if settings.no_repeat_ngram_size > 0:
+            gen_extra["no_repeat_ngram_size"] = settings.no_repeat_ngram_size
 
         def _infer() -> str:
             inputs = processor(

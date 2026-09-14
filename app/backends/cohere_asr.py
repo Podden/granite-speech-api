@@ -17,6 +17,8 @@ import torch
 
 from app.audio import TARGET_SR, load_audio_bytes
 from app.backends.base import ASRBackend
+from app.backends.granite import _collapse_repeats
+from app.config import settings
 from app.schema import TranscriptionRequest, TranscriptionSegment
 
 log = logging.getLogger(__name__)
@@ -100,6 +102,12 @@ class CohereTranscribeBackend(ASRBackend):
         processor = self._processor
         model = self._model
 
+        gen_extra: dict[str, Any] = {}
+        if settings.repetition_penalty != 1.0:
+            gen_extra["repetition_penalty"] = settings.repetition_penalty
+        if settings.no_repeat_ngram_size > 0:
+            gen_extra["no_repeat_ngram_size"] = settings.no_repeat_ngram_size
+
         def _infer() -> str:
             inputs = processor(
                 audio, sampling_rate=TARGET_SR, return_tensors="pt", language=lang
@@ -108,13 +116,13 @@ class CohereTranscribeBackend(ASRBackend):
             with torch.inference_mode():
                 # max_new_tokens is per chunk (feature extractor auto-chunks
                 # long audio) — 512 is generous for the ~30s chunk size.
-                outputs = model.generate(**inputs, max_new_tokens=512)
+                outputs = model.generate(**inputs, max_new_tokens=512, **gen_extra)
             decoded = processor.decode(outputs, skip_special_tokens=True)
             # decode() reassembles chunked long-form audio and returns one
             # string per input audio (list) — we always pass exactly one.
             if isinstance(decoded, (list, tuple)):
                 decoded = " ".join(str(part) for part in decoded)
-            return decoded
+            return _collapse_repeats(decoded)
 
         async with self._lock:
             if progress_cb:

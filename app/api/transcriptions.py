@@ -111,6 +111,16 @@ async def transcribe(
             examples=["Kubernetes, GitOps, ArgoCD"],
         ),
     ] = None,
+    prefix_text: Annotated[
+        str | None,
+        Form(
+            description=(
+                "Incremental decoding: transcript already decoded for the beginning of "
+                "this same audio. The response contains only the continuation. "
+                "AR Granite models only (`2b`, `2b-plus`); ignored by NAR/other backends."
+            ),
+        ),
+    ] = None,
     stream: Annotated[
         bool,
         Form(description="Stream the result as NDJSON events (`duration`, `progress`, `segment`, `result`)."),
@@ -237,6 +247,7 @@ async def transcribe(
         translate=do_translate,
         translate_to=translate_to,
         prompt=prompt,
+        prefix_text=(prefix_text or "").strip() or None,
         stream=do_stream,
         min_speakers=min_speakers,
         max_speakers=max_speakers,

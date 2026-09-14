@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # generate() repetition penalty (1.0 = off). Chunking already prevents most
     # repetition loops; raise this (e.g. 1.1-1.3) only if loops persist.
     repetition_penalty: float = 1.0
+    # generate() n-gram block (0 = off). Cuts repetition loops at decode time;
+    # too low a value also blocks legitimate repeats (numbers, names).
+    no_repeat_ngram_size: int = 0
 
     # Auto-unload the loaded model after this many seconds of inactivity to free
     # VRAM/RAM. Set to -1 (or 0) to disable. The check runs on a background

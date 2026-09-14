@@ -22,6 +22,9 @@ class TranscriptionRequest:
     min_speakers: int | None
     max_speakers: int | None
     num_speakers: int | None = None
+    # Already-decoded transcript of the *same* audio's beginning (incremental /
+    # live use): the AR Granite models then decode only the continuation.
+    prefix_text: str | None = None
     # Speaker turns from the pyannote stage (list[app.diarization.Turn]).
     # When set, backends skip their own speaker attribution and label words
     # against these turns instead.
