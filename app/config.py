@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     hf_token: str = ""
     # pyannote pipeline used for the "pyannote" diarization engine.
     diarization_model: str = "pyannote/speaker-diarization-community-1"
+    # Checkpoint for the "nemotron" diarization engine (NeMo, max 8 speakers).
+    nemotron_diarization_model: str = "nvidia/Nemotron-3-Diarization"
+    # Engine used for diarization_engine="auto": "pyannote" or "nemotron".
+    default_diarization_engine: Literal["pyannote", "nemotron"] = "nemotron"
+    # Forced aligner that adds word timestamps to text-only transcribers.
+    aligner_model: str = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 
     # generate() repetition penalty (1.0 = off). Chunking already prevents most
     # repetition loops; raise this (e.g. 1.1-1.3) only if loops persist.

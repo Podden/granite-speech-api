@@ -77,7 +77,7 @@ def test_speaker_runs_to_segments() -> None:
 
 
 def test_snap_speakers_to_sentences() -> None:
-    from app.backends.fusion import _snap_speakers_to_sentences
+    from app.diarization import snap_speakers_to_sentences as _snap_speakers_to_sentences
 
     # One sentence with a single flickered word in the middle + a short
     # standalone interjection that must keep its own speaker.
@@ -93,15 +93,16 @@ def test_snap_speakers_to_sentences() -> None:
     assert [w.speaker for w in words] == ["SPEAKER_00"] * 4 + ["SPEAKER_01"]
 
 
-def test_fusion_resolution_and_capabilities() -> None:
-    from app.backends.catalog import FUSION, supports_diarization
+def test_fusion_is_a_preset() -> None:
+    from app.backends.catalog import has_native_words, preset_aligner
 
-    assert resolve_model_id("fusion", want_plus_features=False) == FUSION
-    assert resolve_model_id("auto", want_plus_features=True) == FUSION
-    assert supports_diarization(FUSION)
-    assert supports_diarization(resolve_model_id(None, want_plus_features=True))
-    assert not supports_diarization(COHERE_TRANSCRIBE)
-    assert not supports_diarization(QWEN3_ASR)
+    assert resolve_model_id("fusion", want_plus_features=False) == COHERE_TRANSCRIBE
+    assert resolve_model_id("auto", want_plus_features=True) == COHERE_TRANSCRIBE
+    assert preset_aligner("fusion") == "qwen"
+    assert preset_aligner("cohere-transcribe") is None
+    assert has_native_words(resolve_model_id(None, want_plus_features=True))
+    assert not has_native_words(COHERE_TRANSCRIBE)
+    assert not has_native_words(QWEN3_ASR)
 
 
 def test_resolve_model_id_external_aliases() -> None:
@@ -117,56 +118,131 @@ def test_resolve_model_id_granite_fallback() -> None:
     assert is_granite(resolve_model_id("whisper-1", want_plus_features=False))
 
 
-def test_diarize_rejected_for_models_without_word_timestamps(client: TestClient) -> None:
+def test_granite_engine_rejected_for_other_transcribers(client: TestClient) -> None:
     r = client.post(
         "/v1/audio/transcriptions",
         files={"file": ("a.wav", _silence_wav(), "audio/wav")},
-        data={"model": "cohere-transcribe", "speaker_attribution": "true"},
+        data={
+            "model": "cohere-transcribe",
+            "speaker_attribution": "true",
+            "diarization_engine": "granite",
+        },
     )
     assert r.status_code == 400
-    assert "speaker attribution" in r.json()["detail"]
+    assert "2b-plus" in r.json()["detail"]
 
 
-async def test_maybe_diarize_auto_falls_back(monkeypatch) -> None:
-    import app.api.transcriptions as tr
+def _req(**kw):
     from app.schema import TranscriptionRequest
+
+    base = dict(
+        audio_bytes=b"x", filename="a", model="m", language="de",
+        response_format="json", word_timestamps=False, segment_timestamps=True,
+        speaker_attribution=False, translate=False, translate_to=None,
+        prompt=None, stream=False, min_speakers=None, max_speakers=None,
+    )
+    base.update(kw)
+    return TranscriptionRequest(**base)
+
+
+@pytest.mark.parametrize(
+    ("model", "speakers", "word_ts", "engine", "aligner", "want"),
+    [
+        # text-only transcriber + speakers → qwen aligner + external turns
+        (COHERE_TRANSCRIBE, True, False, "nemotron", "auto", ("nemotron", "qwen")),
+        # plus has native words → no aligner model needed
+        ("ibm-granite/granite-speech-4.1-2b-plus", True, False, "pyannote", "auto",
+         ("pyannote", "native")),
+        # granite SAA: no external diarizer
+        ("ibm-granite/granite-speech-4.1-2b-plus", True, False, "granite", "auto",
+         (None, None)),
+        # nothing requested → no stages
+        (QWEN3_ASR, False, False, "auto", "auto", (None, None)),
+        # word timestamps only → aligner
+        (QWEN3_ASR, False, True, "auto", "auto", (None, "qwen")),
+        # forced qwen on plus
+        ("ibm-granite/granite-speech-4.1-2b-plus", False, False, "auto", "qwen",
+         (None, "qwen")),
+    ],
+)
+def test_plan_combinations(model, speakers, word_ts, engine, aligner, want) -> None:
+    from app.pipeline import plan
+
+    req = _req(speaker_attribution=speakers, word_timestamps=word_ts)
+    p = plan(req, model, diarization_engine=engine, aligner=aligner)
+    assert (p.diarizer, p.aligner) == want
+    if p.diarizer:
+        assert not req.speaker_attribution  # backend must not run its own SAA
+    assert req.word_timestamps == (p.aligner == "native")
+    assert (req.max_window_seconds is not None) == (p.aligner == "qwen")
+
+
+@pytest.mark.parametrize(
+    ("model", "kw"),
+    [
+        (COHERE_TRANSCRIBE, {"aligner": "native", "diarization_engine": "auto"}),
+        (COHERE_TRANSCRIBE, {"aligner": "none", "diarization_engine": "pyannote"}),
+    ],
+)
+def test_plan_rejects_impossible(model, kw) -> None:
+    from fastapi import HTTPException
+
+    from app.pipeline import plan
+
+    with pytest.raises(HTTPException):
+        plan(_req(speaker_attribution=True), model, **kw)
+
+
+async def test_pipeline_diarize_falls_back_to_granite(monkeypatch) -> None:
+    import app.pipeline as pl
+    from fastapi import HTTPException
 
     async def _boom(*a, **kw):  # noqa: ANN002, ANN003
         raise RuntimeError("no token")
 
-    monkeypatch.setattr(tr.diarizer, "diarize", _boom)
-    req = TranscriptionRequest(
-        audio_bytes=b"x", filename="a", model="m", language=None,
-        response_format="json", word_timestamps=False, segment_timestamps=True,
-        speaker_attribution=True, translate=False, translate_to=None,
-        prompt=None, stream=False, min_speakers=None, max_speakers=None,
-    )
-    assert await tr._maybe_diarize(req, "auto") == "granite"
-    assert req.diarization_turns is None
+    monkeypatch.setattr(pl.diarizer, "diarize", _boom)
+    plus = "ibm-granite/granite-speech-4.1-2b-plus"
+    req = _req(speaker_attribution=True)
+    p = pl.plan(req, plus, diarization_engine="auto", aligner="auto")
+    assert await p.diarize() == "granite"
+    assert req.speaker_attribution and p.turns is None and not p.needs_post
 
-    from fastapi import HTTPException
-
+    p = pl.plan(_req(speaker_attribution=True), plus,
+                diarization_engine="nemotron", aligner="auto")
     with pytest.raises(HTTPException):
-        await tr._maybe_diarize(req, "pyannote")
+        await p.diarize()
 
 
-async def test_maybe_diarize_attaches_turns(monkeypatch) -> None:
-    import app.api.transcriptions as tr
-    from app.schema import TranscriptionRequest
+async def test_pipeline_post_aligns_and_labels(monkeypatch) -> None:
+    import app.pipeline as pl
+    from app.schema import TranscriptionSegment
 
-    turns = [Turn(0.0, 1.0, "SPEAKER_00")]
+    turns = [Turn(0.0, 1.0, "speaker_0"), Turn(1.0, 2.0, "speaker_1")]
 
-    async def _fake(audio_bytes, num_speakers=None, min_speakers=None, max_speakers=None):
-        assert num_speakers == 3
+    async def _fake_diarize(audio_bytes, engine, **kw):  # noqa: ANN003
+        assert engine == "nemotron" and kw["num_speakers"] == 2
         return turns
 
-    monkeypatch.setattr(tr.diarizer, "diarize", _fake)
-    req = TranscriptionRequest(
-        audio_bytes=b"x", filename="a", model="m", language=None,
-        response_format="json", word_timestamps=False, segment_timestamps=True,
-        speaker_attribution=True, translate=False, translate_to=None,
-        prompt=None, stream=False, min_speakers=None, max_speakers=None,
-        num_speakers=3,
-    )
-    assert await tr._maybe_diarize(req, "auto") == "pyannote"
-    assert req.diarization_turns == turns
+    async def _fake_align(wav, segments, language):
+        assert language == "de"
+        return [_w("Hallo.", 0.1, 0.5), _w("Tschüss.", 1.2, 1.6)]
+
+    monkeypatch.setattr(pl.diarizer, "diarize", _fake_diarize)
+    monkeypatch.setattr(pl.forced_aligner, "align", _fake_align)
+    monkeypatch.setattr(pl, "load_audio_bytes", lambda b: (None, 2.0))
+
+    req = _req(speaker_attribution=True, num_speakers=2)
+    p = pl.plan(req, COHERE_TRANSCRIBE, diarization_engine="nemotron", aligner="auto")
+    assert await p.diarize() == "nemotron"
+    segs = await p.post([TranscriptionSegment(id=0, start=0, end=2, text="Hallo. Tschüss.")], "de")
+    assert [(s.speaker, s.text) for s in segs] == [
+        ("speaker_0", "Hallo."), ("speaker_1", "Tschüss."),
+    ]
+
+
+def test_parse_nemo_segment() -> None:
+    from app.diarization import _parse_nemo_segment
+
+    assert _parse_nemo_segment("1.800 2.100 speaker_1") == Turn(1.8, 2.1, "speaker_1")
+    assert _parse_nemo_segment("0.5, 1.5, speaker_0") == Turn(0.5, 1.5, "speaker_0")
+    assert _parse_nemo_segment("garbage") is None

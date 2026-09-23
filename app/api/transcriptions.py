@@ -9,10 +9,11 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from app.audio import get_duration
 from app.backends import registry
-from app.backends.catalog import is_granite, resolve_model_id, supports_diarization
+from app.backends.catalog import is_granite, preset_aligner, resolve_model_id
 from app.config import settings
 from app.diarization import diarizer
 from app.jobs import tracker
+from app.pipeline import Pipeline, plan
 from app.schema import (
     TranscriptionRequest,
     TranscriptionResponse,
@@ -147,8 +148,9 @@ async def transcribe(
         Form(
             ge=1,
             description=(
-                "Exact number of speakers, if known (passed to the pyannote "
-                "diarization engine). Omit for automatic estimation."
+                "Exact number of speakers, if known (pyannote uses it as a hard "
+                "constraint; nemotron only warns above its limit of 8). Omit for "
+                "automatic estimation."
             ),
         ),
     ] = None,
@@ -161,12 +163,25 @@ async def transcribe(
         Form(ge=1, description="Upper bound on the number of speakers (pyannote engine)."),
     ] = None,
     diarization_engine: Annotated[
-        Literal["auto", "pyannote", "granite"],
+        Literal["auto", "pyannote", "nemotron", "granite"],
         Form(
             description=(
-                "Engine for speaker attribution: `pyannote` (external diarization "
-                "+ word-timestamp reconciliation), `granite` (the model's own SAA "
-                "pass), or `auto` (pyannote with granite fallback)."
+                "Engine for speaker attribution: `pyannote` or `nemotron` (external "
+                "diarization, reconciled with word timestamps from the aligner), "
+                "`granite` (the 2b-plus model's own SAA pass), or `auto` (server "
+                "default `GRANITE_DEFAULT_DIARIZATION_ENGINE`, granite fallback)."
+            ),
+        ),
+    ] = "auto",
+    aligner: Annotated[
+        Literal["auto", "native", "qwen", "none"],
+        Form(
+            description=(
+                "Source of word timestamps: `native` (Granite 2b-plus), `qwen` "
+                "(Qwen3 forced aligner on any transcriber's text), `none`, or "
+                "`auto` (native if the model has it, else qwen — only when word "
+                "timestamps or speakers are requested). The `fusion` model preset "
+                "implies `qwen`."
             ),
         ),
     ] = "auto",
@@ -225,15 +240,6 @@ async def transcribe(
         log.info("Translation requested on %s — using granite base instead", target_model)
         model = None
         target_model = resolve_model_id(None, want_plus_features=False)
-    if do_diarize and not supports_diarization(target_model):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"{target_model} does not support speaker attribution — "
-                "it has no word timestamps to reconcile diarization turns with. "
-                "Use a granite model or `fusion`, or disable speaker attribution."
-            ),
-        )
 
     req = TranscriptionRequest(
         audio_bytes=audio_bytes,
@@ -253,23 +259,31 @@ async def transcribe(
         max_speakers=max_speakers,
         num_speakers=num_speakers,
     )
+    if aligner == "auto":
+        aligner = preset_aligner(model) or "auto"
+    pipe = plan(
+        req, target_model, diarization_engine=diarization_engine, aligner=aligner,
+    )
 
     if do_stream:
         # Model acquisition happens inside the stream so the client sees
         # loading status (cold start after idle-unload can take a while).
         return StreamingResponse(
-            _ndjson_stream(req, duration, want_plus, diarization_engine),
+            _ndjson_stream(pipe, duration, want_plus),
             media_type="application/x-ndjson",
         )
 
     job_id = tracker.enter(duration)
-    if do_diarize:
-        await _maybe_diarize(req, diarization_engine)
-    backend = await registry.acquire(model=req.model, want_plus_features=want_plus)
     try:
-        segments, detected_lang = await backend.transcribe(req)
+        await pipe.diarize()
+        backend = await registry.acquire(model=req.model, want_plus_features=want_plus)
+        try:
+            segments, detected_lang = await backend.transcribe(req)
+            if pipe.needs_post:
+                segments = await pipe.post(segments, detected_lang)
+        finally:
+            await registry.release()
     finally:
-        await registry.release()
         tracker.exit(job_id)
     text = _join_segments(segments).strip()
 
@@ -294,33 +308,6 @@ async def transcribe(
 
 
 # ----- helpers -----
-
-
-async def _maybe_diarize(req: TranscriptionRequest, engine: str) -> str:
-    """Run the pyannote diarization stage and attach turns to `req`.
-
-    Returns the engine actually used ("pyannote" or "granite"). With
-    `engine="auto"` a pyannote failure (missing token, model not cached)
-    falls back to the granite SAA pass; `engine="pyannote"` surfaces it.
-    """
-    if engine == "granite":
-        return "granite"
-    try:
-        req.diarization_turns = await diarizer.diarize(
-            req.audio_bytes,
-            num_speakers=req.num_speakers,
-            min_speakers=req.min_speakers,
-            max_speakers=req.max_speakers,
-        )
-        return "pyannote"
-    except Exception as exc:
-        if engine == "pyannote":
-            raise HTTPException(
-                status_code=502, detail=f"pyannote diarization failed: {exc}"
-            ) from exc
-        log.warning("pyannote diarization failed (%s) — falling back to granite SAA", exc)
-        req.diarization_turns = None
-        return "granite"
 
 
 def _join_segments(segments: list[TranscriptionSegment]) -> str:
@@ -376,30 +363,28 @@ def _to_vtt(segments: list[TranscriptionSegment]) -> str:
     return "\n".join(lines)
 
 
-async def _ndjson_stream(
-    req: TranscriptionRequest,
-    duration: float,
-    want_plus: bool,
-    diarization_engine: str = "auto",
-):
+async def _ndjson_stream(pipe: Pipeline, duration: float, want_plus: bool):
+    req = pipe.req
     backend = None
     job_id = tracker.enter(duration)
     try:
         yield json.dumps({"type": "duration", "duration": duration}) + "\n"
+        yield json.dumps({
+            "type": "status", "stage": "pipeline",
+            "diarizer": pipe.diarizer or ("granite" if req.speaker_attribution else None),
+            "aligner": pipe.aligner,
+        }) + "\n"
 
-        if req.speaker_attribution and diarization_engine != "granite":
+        if pipe.diarizer:
             yield json.dumps({
-                "type": "status", "stage": "diarizing",
-                "cold": not diarizer.loaded,
+                "type": "status", "stage": "diarizing", "engine": pipe.diarizer,
+                "cold": not diarizer.loaded(pipe.diarizer),
             }) + "\n"
-            used = await _maybe_diarize(req, diarization_engine)
+            used = await pipe.diarize()
             yield json.dumps({
                 "type": "status", "stage": "diarization_ready",
                 "engine": used,
-                "speakers": (
-                    len({t.speaker for t in req.diarization_turns})
-                    if req.diarization_turns else None
-                ),
+                "speakers": len({t.speaker for t in pipe.turns}) if pipe.turns else None,
             }) + "\n"
 
         target = resolve_model_id(req.model, want_plus_features=want_plus)
@@ -416,7 +401,9 @@ async def _ndjson_stream(
             "type": "status", "stage": "model_ready", "model": backend.model_id,
         }) + "\n"
 
-        async for event in backend.transcribe_stream(req):
+        async for event in backend.transcribe_stream(
+            req, post=pipe.post if pipe.needs_post else None
+        ):
             yield json.dumps(event) + "\n"
     except Exception as exc:  # noqa: BLE001 — surface to the client, stream is already 200
         log.exception("Streaming transcription failed")

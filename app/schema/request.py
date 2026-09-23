@@ -25,7 +25,6 @@ class TranscriptionRequest:
     # Already-decoded transcript of the *same* audio's beginning (incremental /
     # live use): the AR Granite models then decode only the continuation.
     prefix_text: str | None = None
-    # Speaker turns from the pyannote stage (list[app.diarization.Turn]).
-    # When set, backends skip their own speaker attribution and label words
-    # against these turns instead.
-    diarization_turns: list | None = None
+    # Upper bound for transcriber windows (seconds). Set by the pipeline when a
+    # forced-alignment stage follows, which handles at most 5 min per call.
+    max_window_seconds: float | None = None

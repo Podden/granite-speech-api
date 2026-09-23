@@ -19,8 +19,9 @@ from typing import Any
 
 import torch
 
-from app.audio import load_audio_bytes
+from app.audio import TARGET_SR, load_audio_bytes
 from app.backends.base import ASRBackend
+from app.backends.granite import _plan_windows
 from app.schema import TranscriptionRequest, TranscriptionSegment
 
 log = logging.getLogger(__name__)
@@ -110,13 +111,20 @@ class GraniteNARBackend(ASRBackend):
             raise RuntimeError("Model not loaded")
 
         wav, duration = load_audio_bytes(req.audio_bytes)
-        # NAR feature extractor expects 1-D mono waveform.
-        waveform = wav.squeeze(0)
+        # One shot by default; windows only when a forced-alignment stage
+        # follows (it needs pieces ≤ req.max_window_seconds).
+        cap = req.max_window_seconds
+        windows = (
+            _plan_windows(wav, duration, cap, cap * 0.8)
+            if cap and duration > cap else [(0.0, duration)]
+        )
+        segments: list[TranscriptionSegment] = []
 
         async with self._lock:
             loop = asyncio.get_running_loop()
 
-            def _infer() -> str:
+            def _infer(waveform: torch.Tensor) -> str:
+                # NAR feature extractor expects 1-D mono waveform.
                 inputs = self._extractor([waveform], device=self._device)
                 with torch.inference_mode():
                     output = self._model.transcribe(**inputs)
@@ -128,14 +136,14 @@ class GraniteNARBackend(ASRBackend):
                     raise RuntimeError("NAR processor decoded empty result")
                 return texts[0]
 
-            text = await loop.run_in_executor(None, _infer)
+            for t0, t1 in windows:
+                piece = wav[0, int(t0 * TARGET_SR): int(t1 * TARGET_SR)]
+                text = (await loop.run_in_executor(None, _infer, piece)).strip()
+                if text:
+                    segments.append(TranscriptionSegment(
+                        id=len(segments), start=round(t0, 3), end=round(t1, 3), text=text,
+                    ))
 
-        if req.word_timestamps or req.speaker_attribution:
-            log.warning(
-                "NAR backend cannot produce word timestamps or speaker labels — "
-                "returning plain text. Use the -plus model for those features."
-            )
-
-        return [
-            TranscriptionSegment(id=0, start=0.0, end=duration, text=text.strip())
-        ], req.language
+        if not segments:
+            segments = [TranscriptionSegment(id=0, start=0.0, end=duration, text="")]
+        return segments, req.language

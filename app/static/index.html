@@ -82,6 +82,14 @@
             <option>11</option><option>12</option>
           </select>
         </label>
+        <label>Sprecher-Erkennung
+          <select id="opt-diarizer">
+            <option value="auto" selected>Automatisch (Server-Standard)</option>
+            <option value="pyannote">pyannote community-1</option>
+            <option value="nemotron">NVIDIA Nemotron 3 (max. 8 Sprecher, &uuml;berlappend)</option>
+            <option value="granite">Granite 2b-plus eigene Erkennung</option>
+          </select>
+        </label>
         <span class="muted">Die genaue Anzahl verbessert die Sprecher-Zuordnung deutlich.</span>
       </div>
     </fieldset>
@@ -118,18 +126,24 @@
             <option value="ar">Arabisch</option>
           </select>
         </label>
-        <label>Modell
+        <label>Transkription
           <select id="opt-model">
-            <option value="fusion" selected>Automatisch &mdash; Fusion (Interpunktion + Sprecher + Wort-Timestamps)</option>
+            <option value="cohere-transcribe" selected>Cohere Transcribe &mdash; Interpunktion, empfohlen</option>
             <option value="">Granite 2b &mdash; bisheriger Standard</option>
-            <option value="granite-speech-4.1-2b-plus">Granite 2b-plus &mdash; Sprecher &amp; Wort-Timestamps</option>
+            <option value="granite-speech-4.1-2b-plus">Granite 2b-plus &mdash; eigene Wort-Timestamps &amp; Sprecher</option>
             <option value="granite-speech-4.1-2b-nar">Granite 2b-nar &mdash; am schnellsten</option>
-            <option value="cohere-transcribe">Cohere Transcribe &mdash; nur Text, keine Sprecher</option>
-            <option value="qwen3-asr">Qwen3-ASR &mdash; nur Text, keine Sprecher</option>
+            <option value="qwen3-asr">Qwen3-ASR &mdash; viele Sprachen, Autodetect</option>
+          </select>
+        </label>
+        <label>Wort-Timestamps aus
+          <select id="opt-aligner">
+            <option value="auto" selected>Automatisch (Modell, sonst Aligner)</option>
+            <option value="qwen">Qwen3 Forced Aligner</option>
+            <option value="native">Modell selbst (nur Granite 2b-plus)</option>
           </select>
         </label>
         <label class="check">
-          <input type="checkbox" id="opt-word-ts">
+          <input type="checkbox" id="opt-word-ts" checked>
           Wort-Timestamps (f&uuml;r Untertitel &amp; Klick-Navigation)
         </label>
         <label>&Uuml;bersetzen nach

@@ -683,17 +683,17 @@ function buildFormData() {
 
   const model = $("#opt-model").value;
   if (model) fd.append("model", model);
-  // Cohere/Qwen have no word timestamps → no speaker reconciliation possible.
-  const noSpeakers = model === "cohere-transcribe" || model === "qwen3-asr";
   const multi = document.querySelector('input[name="speakers"]:checked').value === "multi";
-  if (multi && noSpeakers) {
-    log(`${model}: keine Sprecher-Erkennung möglich — Option wird ignoriert.`, "err");
-  } else if (multi) {
+  if (multi) {
     fd.append("speaker_attribution", "true");
     const n = $("#num-speakers").value;
     if (n) fd.append("num_speakers", n);
+    const diarizer = $("#opt-diarizer").value;
+    if (diarizer !== "auto") fd.append("diarization_engine", diarizer);
   }
-  if ($("#opt-word-ts").checked && !noSpeakers) fd.append("timestamp_granularities[]", "word");
+  const aligner = $("#opt-aligner").value;
+  if (aligner !== "auto") fd.append("aligner", aligner);
+  if ($("#opt-word-ts").checked) fd.append("timestamp_granularities[]", "word");
   const lang = $("#opt-language").value;
   if (lang) fd.append("language", lang);
   const translateTo = $("#opt-translate").value;
@@ -815,14 +815,19 @@ function handleEvent(line) {
       } else if (ev.stage === "model_ready") {
         setPhase("transcribe", "Server transkribiert…", short);
         log(`Modell bereit: ${ev.model}`);
+      } else if (ev.stage === "pipeline") {
+        log(`Pipeline: Wort-Timestamps: ${ev.aligner || "–"} · Sprecher: ${ev.diarizer || "–"}`);
       } else if (ev.stage === "diarizing") {
         setPhase("transcribe", "Sprecher werden erkannt…",
-          ev.cold ? "Diarisierungs-Modell wird geladen" : "");
-        log("Sprecher-Erkennung (pyannote) läuft…");
+          ev.cold ? `${ev.engine}: Modell wird geladen` : ev.engine);
+        log(`Sprecher-Erkennung (${ev.engine}) läuft…`);
       } else if (ev.stage === "diarization_ready") {
-        log(ev.engine === "pyannote"
-          ? `Sprecher-Erkennung fertig: ${ev.speakers} Sprecher gefunden`
-          : "Sprecher-Erkennung: Fallback auf Granite-Modell");
+        log(ev.engine === "granite"
+          ? "Sprecher-Erkennung: Fallback auf Granite-Modell"
+          : `Sprecher-Erkennung (${ev.engine}) fertig: ${ev.speakers} Sprecher gefunden`);
+      } else if (ev.stage === "aligning") {
+        setPhase("transcribe", "Wort-Timestamps & Sprecher-Zuordnung…", "");
+        log("Alignment / Sprecher-Zuordnung läuft…");
       }
       break;
     }
@@ -1464,6 +1469,8 @@ async function sendFeedback() {
     speakers: document.querySelector('input[name="speakers"]:checked').value,
     language: $("#opt-language").value || null,
     model: $("#opt-model").value || null,
+    aligner: $("#opt-aligner").value,
+    diarizer: $("#opt-diarizer").value,
     word_timestamps: $("#opt-word-ts").checked,
     translate_to: $("#opt-translate").value || null,
     summary_auto: $("#sum-auto").checked,
@@ -1680,26 +1687,24 @@ document.querySelectorAll('input[name="speakers"]').forEach((r) =>
 /* ── Model capabilities: only offer what the selected model can do ── */
 const LANGS_COHERE = ["de", "en", "fr", "es", "it", "pt", "nl", "pl", "el", "zh", "ja", "ko", "vi", "ar"];
 const LANGS_GRANITE = ["de", "en", "fr", "es", "pt"];
+// Word timestamps + speakers work with every transcriber (forced aligner +
+// external diarizer); only the model-native variants depend on the model.
 const MODEL_CAPS = {
-  // wordTs: false | true | "always"; langs: null = alle (+ Autodetect);
-  // needsLang: Sprachangabe Pflicht (kein Autodetect)
-  "fusion": { wordTs: "always", keywords: false, multi: true, langs: LANGS_COHERE, needsLang: true },
-  "": { wordTs: true, keywords: true, multi: true, langs: [...LANGS_GRANITE, "ja"] },
-  "granite-speech-4.1-2b-plus": { wordTs: true, keywords: true, multi: true, langs: LANGS_GRANITE },
-  "granite-speech-4.1-2b-nar": { wordTs: false, keywords: true, multi: false, langs: LANGS_GRANITE },
-  "cohere-transcribe": { wordTs: false, keywords: false, multi: false, langs: LANGS_COHERE, needsLang: true },
-  "qwen3-asr": { wordTs: false, keywords: false, multi: false, langs: null },
+  // native: eigene Wort-Timestamps + Granite-Sprechererkennung (2b-plus);
+  // langs: null = alle (+ Autodetect); needsLang: Sprachangabe Pflicht
+  "": { native: true, keywords: true, langs: [...LANGS_GRANITE, "ja"] },
+  "granite-speech-4.1-2b-plus": { native: true, keywords: true, langs: LANGS_GRANITE },
+  "granite-speech-4.1-2b-nar": { native: false, keywords: true, langs: LANGS_GRANITE },
+  "cohere-transcribe": { native: false, keywords: false, langs: LANGS_COHERE, needsLang: true },
+  "qwen3-asr": { native: false, keywords: false, langs: null },
 };
 
 function applyModelCaps() {
   const caps = MODEL_CAPS[$("#opt-model").value] || MODEL_CAPS[""];
-  const ts = $("#opt-word-ts");
-  if (caps.wordTs === "always") {
-    ts.checked = true;
-    ts.disabled = true;
-  } else {
-    ts.disabled = !caps.wordTs;
-    if (!caps.wordTs) ts.checked = false;
+  for (const [sel, val] of [["#opt-aligner", "native"], ["#opt-diarizer", "granite"]]) {
+    const opt = $(sel).querySelector(`option[value="${val}"]`);
+    opt.disabled = !caps.native;
+    if (opt.disabled && $(sel).value === val) $(sel).value = "auto";
   }
   const kw = $("#opt-keywords");
   kw.disabled = !caps.keywords;
@@ -1714,12 +1719,6 @@ function applyModelCaps() {
   }
   if (langSel.selectedOptions[0]?.disabled) {
     langSel.value = !caps.langs || caps.langs.includes("de") ? "de" : caps.langs[0];
-  }
-  const multiRadio = document.querySelector('input[name="speakers"][value="multi"]');
-  multiRadio.disabled = !caps.multi;
-  if (!caps.multi && multiRadio.checked) {
-    document.querySelector('input[name="speakers"][value="single"]').checked = true;
-    els.speakerOpts.hidden = true;
   }
 }
 $("#opt-model").addEventListener("change", applyModelCaps);

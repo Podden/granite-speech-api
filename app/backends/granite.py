@@ -201,14 +201,9 @@ class GraniteBackend(ASRBackend):
         is_plus = self.model_id == GRANITE_PLUS
         want_words = req.word_timestamps and is_plus
         want_speakers = req.speaker_attribution and is_plus
-        # Turns from the external (pyannote) diarization stage replace the
-        # model's own SAA pass: one word-timestamp pass + turn reconciliation.
-        use_turns = bool(req.diarization_turns) and is_plus
 
         # Progress accounting in processed audio-seconds across all passes.
-        total_work = duration * (
-            2 if (want_words and want_speakers and not use_turns) else 1
-        )
+        total_work = duration * (2 if (want_words and want_speakers) else 1)
         done_work = 0.0
 
         def tick(seconds: float) -> None:
@@ -222,15 +217,7 @@ class GraniteBackend(ASRBackend):
                 partial_cb(text.strip(), round(start, 3), round(end, 3))
 
         async with self._lock:
-            if use_turns:
-                from app.diarization import assign_speakers
-
-                words = await self._words_pass(wav, duration, req, tick, partial, delta_cb)
-                assign_speakers(words, req.diarization_turns)
-                segments = _speaker_runs_to_segments(words) or _segments_from_words(
-                    words, fallback_end=duration
-                )
-            elif want_words and want_speakers:
+            if want_words and want_speakers:
                 # Two-pass: word-timestamps + speakers, merge by sequential alignment.
                 # Live partials/deltas come from the first (word-timestamp) pass only.
                 words = await self._words_pass(wav, duration, req, tick, partial, delta_cb)
@@ -261,7 +248,9 @@ class GraniteBackend(ASRBackend):
         prompt = self._build_prompt(
             word_timestamps=False, speaker_attribution=False, req=req,
         )
-        windows = _plan_windows(wav, duration, MAX_ASR_SECONDS, CHUNK_ASR_SECONDS)
+        windows = _plan_windows(
+            wav, duration, *window_limits(req, MAX_ASR_SECONDS, CHUNK_ASR_SECONDS)
+        )
         segments: list[TranscriptionSegment] = []
         for t0, t1 in windows:
             piece = wav[:, int(t0 * TARGET_SR): int(t1 * TARGET_SR)]
@@ -529,6 +518,16 @@ def _plan_windows(
     bounds += [_quiet_point(wav, step * i, radius=10.0) for i in range(1, n)]
     bounds.append(duration)
     return [(a, b) for a, b in zip(bounds, bounds[1:]) if b - a > 0.05]
+
+
+def window_limits(
+    req: TranscriptionRequest, max_s: float, target_s: float
+) -> tuple[float, float]:
+    """(max, target) window seconds, tightened by the pipeline's alignment cap."""
+    cap = req.max_window_seconds
+    if cap and cap < max_s:
+        return cap, min(target_s, cap * 0.8)
+    return max_s, target_s
 
 
 def _quiet_point(wav: torch.Tensor, t: float, radius: float) -> float:

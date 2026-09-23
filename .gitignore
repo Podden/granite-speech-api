@@ -34,3 +34,9 @@ Thumbs.db
 
 .playwright-mcp/
 feedback.jsonl
+
+# Benchmark audio + raw API responses (regenerate via bench/*.py)
+bench/data/
+bench/real/
+bench/responses/
+bench/*.log

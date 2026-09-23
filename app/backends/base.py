@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 from app.schema import TranscriptionRequest, TranscriptionSegment
+
+
+# (segments, language) -> post-processed segments (alignment + speaker labels).
+PostProcess = Callable[
+    [list[TranscriptionSegment], str | None], Awaitable[list[TranscriptionSegment]]
+]
 
 
 class ASRBackend(ABC):
@@ -36,12 +42,15 @@ class ASRBackend(ABC):
         """
 
     async def transcribe_stream(
-        self, req: TranscriptionRequest
+        self,
+        req: TranscriptionRequest,
+        post: PostProcess | None = None,
     ) -> AsyncIterator[dict]:
         """Default streaming wrapper: emits progress + token deltas + partial
         chunk texts + final segments + result. Progress/delta/partial events
-        are forwarded live from `transcribe()`. Backends with native streaming
-        may override.
+        are forwarded live from `transcribe()`. `post` (optional) runs the
+        pipeline's alignment/diarization stages on the segments before they
+        are emitted. Backends with native streaming may override.
         """
         yield {"type": "progress", "progress": 0}
 
@@ -85,6 +94,9 @@ class ASRBackend(ABC):
             yield queue.get_nowait()
 
         segments, language = await task
+        if post is not None:
+            yield {"type": "status", "stage": "aligning"}
+            segments = await post(segments, language)
         for seg in segments:
             ev: dict = {
                 "type": "segment",

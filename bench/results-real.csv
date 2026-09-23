@@ -1,0 +1,11 @@
+file,config,num_speakers_given,ref_speakers,hyp_speakers,der,miss,fa,confusion,duration,seconds,rtfx,error
+hartaberfair,cohere+pyannote,,,6,,,,,600.0,14.2,42.3,
+lagedernation,cohere+pyannote,,,2,,,,,600.0,14.5,41.3,
+lanz,cohere+pyannote,,,5,,,,,600.0,14.1,42.5,
+maischberger,cohere+pyannote,,,3,,,,,600.0,14.1,42.6,
+presseclub,cohere+pyannote,,,5,,,,,600.0,13.9,43.1,
+hartaberfair,cohere+nemotron,,,6,,,,,600.0,5.7,105.2,
+lagedernation,cohere+nemotron,,,2,,,,,600.0,6.0,100.6,
+lanz,cohere+nemotron,,,5,,,,,600.0,5.8,103.6,
+maischberger,cohere+nemotron,,,3,,,,,600.0,5.8,104.0,
+presseclub,cohere+nemotron,,,5,,,,,600.0,5.9,101.5,

@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -12,7 +12,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 # gcc: triton JIT-compiles its CUDA driver stub at runtime (torch native ops
 # route e.g. RoPE matmuls through triton kernels) and needs a C compiler.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libsndfile1 ffmpeg ca-certificates gcc libc6-dev && \
+        libsndfile1 ffmpeg ca-certificates gcc libc6-dev git && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -34,7 +34,7 @@ RUN uv pip install --system \
 COPY pyproject.toml README.md ./
 COPY app ./app
 
-# Install remaining app deps.
+# Install remaining app deps (+ NeMo for the Nemotron diarization engine).
 # --extra-index-url lets uv find the already-installed CUDA torch (>=2.7 satisfied)
 # so it is NOT replaced by a PyPI rebuild. unsafe-best-match: the torch index
 # mirrors stale copies of common packages (e.g. tqdm<=4.66.5) and uv's default
@@ -42,7 +42,7 @@ COPY app ./app
 RUN uv pip install --system \
         --index-strategy unsafe-best-match \
         --extra-index-url "${TORCH_INDEX}" \
-        .
+        ".[nemotron]"
 
 EXPOSE 8000
 VOLUME ["/data/hf-cache"]

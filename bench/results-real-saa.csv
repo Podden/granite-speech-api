@@ -1,0 +1,6 @@
+file,config,num_speakers_given,ref_speakers,hyp_speakers,der,miss,fa,confusion,duration,seconds,rtfx,error
+hartaberfair,plus+granite-saa,,,4,,,,,600.0,295.6,2.0,
+lagedernation,plus+granite-saa,,,2,,,,,600.0,307.9,1.9,
+lanz,plus+granite-saa,,,3,,,,,600.0,293.2,2.0,
+maischberger,plus+granite-saa,,,3,,,,,600.0,312.7,1.9,
+presseclub,plus+granite-saa,,,2,,,,,600.0,328.5,1.8,

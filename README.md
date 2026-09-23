@@ -100,9 +100,9 @@ granite-speech-api    # or: uvicorn app.main:app --host 0.0.0.0 --port 8000
 | ------------------------------ | :------------: | :--------------: | :----------: | :---------------: | :----------: |
 | Plain ASR                      | ✅             | ✅               | ✅           | ✅                | ✅           |
 | Punctuation + capitalization   | ✅             | ✅ (plain ASR)   | ✅           | ✅ (best)         | ✅           |
-| Word-level timestamps          | ❌             | ✅ via `[T:N]`   | ❌           | ❌                | ❌ ¹         |
-| Punctuation **with** word timestamps | ❌       | ❌ ²             | ❌           | ❌                | ❌           |
-| Speaker attribution (pyannote) | via auto-upgrade | ✅             | ❌           | ❌ (400)          | ❌ (400)     |
+| Word-level timestamps          | via aligner    | ✅ via `[T:N]`   | via aligner  | via aligner       | via aligner  |
+| Punctuation **with** word timestamps | via aligner | via aligner ² | ❌ (no punct.) | ✅ via aligner | ✅ via aligner |
+| Speaker attribution (pyannote / nemotron) | via auto-upgrade | ✅ | ✅   | ✅                | ✅           |
 | Speaker attribution (native SAA) | ❌           | ✅ `[Speaker N]:`| ❌           | ❌                | ❌           |
 | Keyword biasing (`prompt`)     | ✅             | ✅               | ✅           | ❌                | ❌           |
 | Speech translation (AST)       | ✅ 7 langs     | ❌               | ❌           | ❌                | ❌           |
@@ -113,11 +113,11 @@ granite-speech-api    # or: uvicorn app.main:app --host 0.0.0.0 --port 8000
 | Gated (needs `GRANITE_HF_TOKEN`) | no           | no               | no           | **yes**           | no           |
 | Relative speed (5-min clip)    | ~35 s          | ~35–75 s         | fastest (claimed) | **~10 s**    | ~40 s        |
 
-¹ Word timestamps would need the separate `Qwen3-ForcedAligner-0.6B-hf` (not integrated yet).
+"via aligner" = the `qwen` forced-alignment stage (see Pipeline below).
 ² Verified empirically (July 2026): the `[T:N]` timestamp task always emits lowercase,
   punctuation-free output — prompt variants asking for punctuation have zero effect.
-  Consequence: pyannote-diarized transcripts are lowercase/unpunctuated too, since they
-  are built from the word-timestamp pass.
+  With `aligner=native` diarized transcripts are therefore lowercase/unpunctuated;
+  `aligner=qwen` keeps the punctuated plain-ASR text instead.
 
 **Granite languages** (ASR): English, French, German, Spanish, Portuguese
 (Japanese also supported by `2b`). **Cohere**: 14 languages (en, fr, de, it, es,
@@ -141,27 +141,40 @@ hot-swap + idle-unload semantics; one model in VRAM at a time):
   language identification (via the `qwen-asr` package). Long audio is chunked
   at quiet points server-side. Plain ASR only.
 
-Neither produces word timestamps yet, so speaker attribution is rejected for
-them (400).
+All transcribers can take part in word timestamps and speaker attribution
+through the pipeline stages below.
 
-- **`fusion`** (alias `auto`, UI default) — multi-pass pipeline: Cohere
-  Transcribe text (best punctuation) + `Qwen3-ForcedAligner-0.6B-hf` word
-  timestamps (re-mapped onto the punctuated tokens) + pyannote speaker turns.
-  The only mode that combines punctuation, capitalization, speakers and word
-  timestamps. Translation requests fall back to granite base (AST).
+### Pipeline: transcriber → aligner → diarizer
 
-### Speaker diarization (pyannote)
+Each request composes three independent stages:
 
-`speaker_attribution=true` now runs a dedicated diarization stage by default:
-[pyannote `speaker-diarization-community-1`](https://huggingface.co/pyannote/speaker-diarization-community-1)
-produces speaker turns, the Granite `-plus` word-timestamp pass produces word
-timings, and the two are reconciled into speaker-labelled segments. This
-replaces the Granite SAA pass (which remains available via
-`diarization_engine=granite` and as automatic fallback).
+| Stage | Parameter | Options |
+| --- | --- | --- |
+| Transcriber | `model` | any model above |
+| Word timestamps | `aligner` | `auto` (default: model-native if available, else `qwen`, only when words/speakers are requested) · `native` (Granite 2b-plus `[T:N]`) · `qwen` ([`Qwen3-ForcedAligner-0.6B-hf`](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B-hf), forced alignment of any transcriber's text, keeps punctuation) · `none` |
+| Speakers | `diarization_engine` | `auto` (default: `GRANITE_DEFAULT_DIARIZATION_ENGINE`, default `nemotron`; Granite SAA fallback) · `pyannote` ([community-1](https://huggingface.co/pyannote/speaker-diarization-community-1), gated) · `nemotron` ([NVIDIA Nemotron-3-Diarization](https://huggingface.co/nvidia/Nemotron-3-Diarization), max 8 speakers, overlap-aware) · `granite` (2b-plus native SAA) |
 
-Requirements: the pipeline is **gated** — set `GRANITE_HF_TOKEN` to a
-HuggingFace token whose account accepted the model conditions. The pipeline
-(~500 MB VRAM) is lazy-loaded and idle-unloaded like the ASR models.
+External diarizers (`pyannote`, `nemotron`) run first and produce speaker
+turns; the transcriber produces text; the aligner adds word timings; the words
+are labelled by best-overlapping turn and majority-voted per sentence (when the
+text is punctuated). Impossible combinations are rejected with 400 (e.g.
+`aligner=native` on Cohere, `diarization_engine=granite` on anything but
+2b-plus). Translation skips alignment and diarization.
+
+- **`fusion`** (alias `auto`) is now a preset: `model=cohere-transcribe` +
+  `aligner=qwen` — punctuation, capitalization, word timestamps and (with
+  `speaker_attribution`) speakers.
+- The aligner and both diarizers are lazy-loaded next to the ASR model and
+  idle-unloaded with the same TTL. VRAM: aligner ~1.5 GB, pyannote ~0.5 GB,
+  Nemotron ~1 GB.
+- pyannote is **gated** — set `GRANITE_HF_TOKEN` to a token whose account
+  accepted the model conditions. Nemotron needs NeMo (`pip install
+  ".[nemotron]"`, Python ≥ 3.12; the Docker image includes it).
+- `num_speakers` / `min_speakers` / `max_speakers` are hard constraints for
+  pyannote; Nemotron ignores them (it has a fixed ceiling of 8).
+
+Benchmarks: `bench/` (`make_synth.py` renders German TTS conversations with
+exact RTTM ground truth, `run_bench.py` scores any config set against the API).
 
 ---
 
@@ -180,8 +193,10 @@ Multipart form. Everything except `file` is optional.
 | `timestamp_granularities[]`    | string   | `segment` (default), `word` (forces `-plus`)                                                       |
 | `prompt`                       | string   | Comma-separated keywords for biased ASR                                                            |
 | `translate`, `translate_to`    | bool/str | AST (`-2b` only): `english`/`french`/`german`/`spanish`/`portuguese`/`japanese`/`italian`/`mandarin` |
-| `speaker_attribution`          | bool     | Forces `-plus`, adds `[Speaker N]:` to segments                                                    |
-| `min_speakers`/`max_speakers`  | int      | Reserved (advisory)                                                                                |
+| `speaker_attribution`          | bool     | Speaker labels per segment (Granite default model auto-upgrades to `-plus`)                        |
+| `diarization_engine`           | string   | `auto` (default), `pyannote`, `nemotron`, `granite` — see Pipeline                                 |
+| `aligner`                      | string   | `auto` (default), `native`, `qwen`, `none` — see Pipeline                                          |
+| `num_speakers`/`min_speakers`/`max_speakers` | int | Speaker-count hints (pyannote)                                                       |
 | `stream`                       | bool     | Emit NDJSON event stream                                                                           |
 | `diarize`/`hf_token`/`batch_size`/`compute_type` | — | WhisperX aliases, accepted for drop-in compatibility                                       |
 

@@ -12,9 +12,8 @@ import logging
 import time
 
 from app.backends.base import ASRBackend
-from app.backends.catalog import COHERE_TRANSCRIBE, FUSION, QWEN3_ASR, resolve_model_id
+from app.backends.catalog import COHERE_TRANSCRIBE, QWEN3_ASR, resolve_model_id
 from app.backends.cohere_asr import CohereTranscribeBackend
-from app.backends.fusion import FusionBackend
 from app.backends.granite import GraniteBackend
 from app.backends.granite_nar import GRANITE_NAR_ID, GraniteNARBackend
 from app.backends.qwen_asr import QwenASRBackend
@@ -28,7 +27,6 @@ def _backend_class(model_id: str) -> type[ASRBackend]:
         GRANITE_NAR_ID: GraniteNARBackend,
         COHERE_TRANSCRIBE: CohereTranscribeBackend,
         QWEN3_ASR: QwenASRBackend,
-        FUSION: FusionBackend,
     }.get(model_id, GraniteBackend)
 
 

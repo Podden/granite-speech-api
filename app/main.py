@@ -14,6 +14,7 @@ from starlette.requests import Request as StarletteRequest
 from app.api import api_router
 from app.backends import registry
 from app.config import settings
+from app.aligner import aligner
 from app.diarization import diarizer
 
 logging.basicConfig(
@@ -39,7 +40,9 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     # when no transcription is ever requested.
     registry.start_idle_monitor()
     diarizer.start_idle_monitor()
+    aligner.start_idle_monitor()
     yield
+    await aligner.shutdown()
     await diarizer.shutdown()
     await registry.shutdown()
 
