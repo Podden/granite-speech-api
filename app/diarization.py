@@ -120,9 +120,10 @@ def _use_device() -> None:
     """
     import torch
 
-    device = settings.resolved_device()
-    if device.startswith("cuda") and torch.cuda.is_available():
-        torch.cuda.set_device(device)
+    device = torch.device(settings.resolved_device())
+    if device.type == "cuda" and torch.cuda.is_available():
+        # Plain "cuda" has no index; set_device() needs one → default GPU 0.
+        torch.cuda.set_device(device.index or 0)
 
 
 class NemotronDiarizer(LazyModel):
