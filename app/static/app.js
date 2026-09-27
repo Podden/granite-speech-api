@@ -680,7 +680,11 @@ function buildFormData() {
   const fd = new FormData();
   fd.append("file", state.uploadBlob, state.uploadName);
   fd.append("stream", "true");
+  appendOptions(fd);
+  return fd;
+}
 
+function appendOptions(fd) {
   const model = $("#opt-model").value;
   if (model) fd.append("model", model);
   const multi = document.querySelector('input[name="speakers"]:checked').value === "multi";
@@ -700,7 +704,19 @@ function buildFormData() {
   if (translateTo) { fd.append("translate", "true"); fd.append("translate_to", translateTo); }
   const keywords = $("#opt-keywords").value.trim();
   if (keywords) fd.append("prompt", keywords);
-  return fd;
+}
+
+/* Preload the models the current options need, so they are warm by the time
+   the upload finishes. Fire-and-forget; the server skips what is loaded. */
+let warmTimer = 0;
+function warmup(delay = 0) {
+  clearTimeout(warmTimer);
+  warmTimer = setTimeout(() => {
+    const fd = new FormData();
+    appendOptions(fd);
+    fd.delete("prompt");
+    fetch("/v1/warmup", { method: "POST", body: fd }).catch(() => {});
+  }, delay);
 }
 
 function startTranscription() {
@@ -1539,6 +1555,7 @@ function resetFile() {
 
 function onFilesSelected(files) {
   if (!files.length) return;
+  warmup();
   if (files.length === 1) {
     state.queue = [];
     renderBatchList();
@@ -1760,5 +1777,9 @@ loadSummaryModels();
 
 refreshHealth();
 setInterval(refreshHealth, 30000);
+warmup();
+for (const sel of ["#opt-model", "#opt-aligner", "#opt-diarizer", "#opt-language", "#opt-translate", "#opt-word-ts", 'input[name="speakers"]']) {
+  document.querySelectorAll(sel).forEach((el) => el.addEventListener("change", () => warmup(800)));
+}
 log("UI bereit.");
 restoreSession();

@@ -285,3 +285,25 @@ def test_job_tracker() -> None:
 def test_health_exposes_queue(client: TestClient) -> None:
     q = client.get("/health").json()["queue"]
     assert "active_jobs" in q and "queue_eta_seconds" in q
+
+
+def test_warmup_picks_pipeline_models(client: TestClient, monkeypatch) -> None:
+    from app.aligner import aligner
+    from app.backends import registry
+    from app.diarization import diarizer
+
+    async def noop(*_a, **_k) -> None:
+        return None
+
+    monkeypatch.setattr(registry, "get", noop)
+    monkeypatch.setattr(diarizer, "warm", noop)
+    monkeypatch.setattr(aligner, "warm", noop)
+    r = client.post(
+        "/v1/warmup",
+        data={"model": "cohere-transcribe", "speaker_attribution": "true",
+              "diarization_engine": "nemotron"},
+    )
+    assert r.status_code == 202
+    assert r.json()["warming"] == [
+        "nemotron", "CohereLabs/cohere-transcribe-03-2026", aligner.name,
+    ]

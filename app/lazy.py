@@ -52,6 +52,10 @@ class LazyModel:
             finally:
                 self._last_used = time.monotonic()
 
+    async def warm(self) -> None:
+        """Load the model now (no-op when loaded) and reset its idle timer."""
+        await self.run(lambda _model: None)
+
     async def unload(self) -> str | None:
         async with self._lock:
             if self._model is None:

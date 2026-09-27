@@ -185,6 +185,9 @@ class Diarizer:
     def loaded(self, engine: str) -> bool:
         return self.engines[engine].loaded
 
+    async def warm(self, engine: str) -> None:
+        await self.engines[engine].warm()
+
     async def diarize(
         self,
         audio_bytes: bytes,

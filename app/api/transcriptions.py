@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Annotated, Any, Literal
@@ -7,6 +8,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Form, HTTPException, UploadFile, File
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
+from app.aligner import aligner as forced_aligner
 from app.audio import get_duration
 from app.backends import registry
 from app.backends.catalog import is_granite, preset_aligner, resolve_model_id
@@ -227,19 +229,9 @@ async def transcribe(
     do_diarize = speaker_attribution or diarize
     do_translate = translate or bool(translate_to)
     do_stream = stream
-
-    # The base 2b model tends to translate non-English speech to English
-    # instead of transcribing ("wrong-language hallucination"); the -plus
-    # model transcribes the spoken language faithfully. AST still needs base.
-    non_english = bool(language) and language.strip().lower() not in {"en", "english"}
-    want_plus = word_ts or do_diarize or (non_english and not do_translate)
-
-    target_model = resolve_model_id(model, want_plus_features=want_plus)
-    if do_translate and not is_granite(target_model):
-        # AST is a granite-2b-only capability — route translation there.
-        log.info("Translation requested on %s — using granite base instead", target_model)
-        model = None
-        target_model = resolve_model_id(None, want_plus_features=False)
+    model, target_model, want_plus = _resolve_model(
+        model, language, word_ts=word_ts, diarize=do_diarize, translate=do_translate
+    )
 
     req = TranscriptionRequest(
         audio_bytes=audio_bytes,
@@ -307,7 +299,98 @@ async def transcribe(
     return {"text": text}
 
 
+_warm_tasks: set[asyncio.Task[None]] = set()
+_warm_lock = asyncio.Lock()  # one warmup at a time (page open + file pick overlap)
+
+
+@router.post("/v1/warmup", status_code=202, summary="Preload the models a request would use")
+async def warmup(
+    model: Annotated[str | None, Form()] = None,
+    language: Annotated[str | None, Form()] = None,
+    timestamp_granularities: Annotated[
+        str | None, Form(alias="timestamp_granularities[]")
+    ] = None,
+    speaker_attribution: Annotated[bool, Form()] = False,
+    translate: Annotated[bool, Form()] = False,
+    translate_to: Annotated[TranslateTarget | None, Form()] = None,
+    diarization_engine: Annotated[
+        Literal["auto", "pyannote", "nemotron", "granite"], Form()
+    ] = "auto",
+    aligner: Annotated[Literal["auto", "native", "qwen", "none"], Form()] = "auto",
+) -> dict:
+    """Load the transcriber, diarizer and aligner for these options in the background.
+
+    Takes the same option fields as `/v1/audio/transcriptions` (no file) and
+    returns immediately. The UI calls it on page open and when a file is
+    picked, so the models are warm by the time the upload finishes. The
+    transcriber is not hot-swapped while a transcription is running.
+    """
+    _, word_ts = _parse_granularities(timestamp_granularities)
+    do_translate = translate or bool(translate_to)
+    model, target_model, want_plus = _resolve_model(
+        model, language, word_ts=word_ts, diarize=speaker_attribution, translate=do_translate
+    )
+    req = TranscriptionRequest(
+        audio_bytes=b"", filename="", model=model or settings.default_model,
+        language=language, response_format="json", word_timestamps=word_ts,
+        segment_timestamps=True, speaker_attribution=speaker_attribution,
+        translate=do_translate, translate_to=translate_to, prompt=None,
+        stream=False, min_speakers=None, max_speakers=None,
+    )
+    if aligner == "auto":
+        aligner = preset_aligner(model) or "auto"
+    pipe = plan(req, target_model, diarization_engine=diarization_engine, aligner=aligner)
+
+    # Pipeline order: the diarizer runs first, so it is the first one needed.
+    loads: list[tuple[str, Any]] = []
+    if pipe.diarizer and not diarizer.loaded(pipe.diarizer):
+        loads.append((pipe.diarizer, lambda: diarizer.warm(pipe.diarizer)))
+    busy = tracker.snapshot()["active_jobs"] > 0
+    if registry.loaded_model != target_model and not (busy and registry.loaded_model):
+        loads.append(
+            (target_model, lambda: registry.get(model=req.model, want_plus_features=want_plus))
+        )
+    if pipe.aligner == "qwen" and not forced_aligner.loaded:
+        loads.append((forced_aligner.name, forced_aligner.warm))
+
+    async def _run() -> None:
+        # Sequential on purpose: concurrent first imports of transformers/NeMo
+        # from several executor threads race ("cannot import name AutoModel").
+        async with _warm_lock:
+            for name, load in loads:
+                try:
+                    await load()
+                except Exception as exc:  # noqa: BLE001 — warmup is best effort
+                    log.warning("Warmup of %s failed: %s", name, exc)
+
+    if loads:
+        log.info("Warmup: %s", ", ".join(n for n, _ in loads))
+        task = asyncio.create_task(_run(), name="warmup")
+        _warm_tasks.add(task)
+        task.add_done_callback(_warm_tasks.discard)
+    return {"warming": [n for n, _ in loads]}
+
+
 # ----- helpers -----
+
+
+def _resolve_model(
+    model: str | None, language: str | None, *, word_ts: bool, diarize: bool, translate: bool
+) -> tuple[str | None, str, bool]:
+    """Return (model, target_model_id, want_plus) for the requested options."""
+    # The base 2b model tends to translate non-English speech to English
+    # instead of transcribing ("wrong-language hallucination"); the -plus
+    # model transcribes the spoken language faithfully. AST still needs base.
+    non_english = bool(language) and language.strip().lower() not in {"en", "english"}
+    want_plus = word_ts or diarize or (non_english and not translate)
+
+    target_model = resolve_model_id(model, want_plus_features=want_plus)
+    if translate and not is_granite(target_model):
+        # AST is a granite-2b-only capability — route translation there.
+        log.info("Translation requested on %s — using granite base instead", target_model)
+        model = None
+        target_model = resolve_model_id(None, want_plus_features=False)
+    return model, target_model, want_plus
 
 
 def _join_segments(segments: list[TranscriptionSegment]) -> str:
