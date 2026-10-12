@@ -16,8 +16,15 @@ services:
       # additionally lets huggingface_hub authenticate ALL downloads.
       GRANITE_HF_TOKEN: ${GRANITE_HF_TOKEN:-}
       HF_TOKEN: ${GRANITE_HF_TOKEN:-}
-      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-1}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      # VRAM broker (see docs/network/docker.md): lease before a model is loaded, eviction via /v1/models/unload?if_idle=true
+      GRANITE_VRAM_BROKER_SOCK: /run/vram-broker/broker.sock
+      # Without this, unloading a model does not give the VRAM back (the allocator segment stays pinned by a few live
+      # tensors: 4.4 GB stayed after unload on 2026-10-12). Required for broker eviction to free anything.
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    volumes:
+      - /home/lefx/vram-broker/run:/run/vram-broker
     deploy:
       resources:
         limits:
@@ -25,7 +32,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: ["1"]
               capabilities: [gpu]
     logging:
       driver: json-file
