@@ -12,6 +12,7 @@ from app.backends.granite import (
     GRANITE_PLUS,
     normalize_model_id as _granite_normalize,
 )
+from app.backends.turboctc import GRANITE_TURBOCTC
 
 COHERE_TRANSCRIBE = "CohereLabs/cohere-transcribe-03-2026"
 # The "-hf" checkpoint is the transformers-native conversion; the original
@@ -23,7 +24,7 @@ QWEN3_ASR = "Qwen/Qwen3-ASR-1.7B-hf"
 FUSION = "fusion"
 PRESETS = {"fusion": (COHERE_TRANSCRIBE, "qwen"), "auto": (COHERE_TRANSCRIBE, "qwen")}
 
-EXTERNAL_MODELS = {COHERE_TRANSCRIBE, QWEN3_ASR}
+EXTERNAL_MODELS = {COHERE_TRANSCRIBE, QWEN3_ASR, GRANITE_TURBOCTC}
 
 _EXTERNAL_ALIASES = {
     "cohere-transcribe": COHERE_TRANSCRIBE,
@@ -33,6 +34,9 @@ _EXTERNAL_ALIASES = {
     "qwen3-asr-1.7b": QWEN3_ASR,
     "qwen/qwen3-asr-1.7b": QWEN3_ASR,
     "qwen/qwen3-asr-1.7b-hf": QWEN3_ASR,
+    "turboctc": GRANITE_TURBOCTC,
+    "granite-speech-5.0-470m-turboctc": GRANITE_TURBOCTC,
+    "ibm-granite/granite-speech-5.0-470m-turboctc": GRANITE_TURBOCTC,
 }
 
 ALL_MODELS = GRANITE_MODELS | EXTERNAL_MODELS

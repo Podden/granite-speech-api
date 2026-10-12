@@ -7,6 +7,7 @@ aligner): loaded on first use, dropped again after the same idle TTL.
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 import time
 from collections.abc import Callable
@@ -17,6 +18,23 @@ from app.config import settings
 log = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+
+def free_gpu_memory() -> None:
+    """Hand the VRAM of a just-dropped model back to the driver.
+
+    Models sit in reference cycles (NeMo always); an idle server allocates
+    nothing, so the cyclic GC never runs and ``empty_cache()`` alone frees
+    nothing — the process keeps holding the VRAM with no model loaded.
+    """
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class LazyModel:
@@ -62,13 +80,7 @@ class LazyModel:
                 return None
             log.info("Unloading %s", self.name)
             self._model = None
-            try:
-                import torch
-
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception:  # noqa: BLE001
-                pass
+            free_gpu_memory()
             return self.name
 
     def start_idle_monitor(self) -> None:

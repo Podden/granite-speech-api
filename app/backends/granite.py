@@ -12,6 +12,7 @@ import torch
 from app.audio import TARGET_SR, load_audio_bytes
 from app.backends.base import ASRBackend
 from app.config import settings
+from app.lazy import free_gpu_memory
 from app.schema import TranscriptionRequest, TranscriptionSegment, TranscriptionWord
 
 log = logging.getLogger(__name__)
@@ -25,6 +26,12 @@ MAX_TS_SECONDS = 210.0
 # has room to move the boundary).
 CHUNK_ASR_SECONDS = 480.0
 CHUNK_TS_SECONDS = 180.0
+# The 9-minute figure is for the plus model only. The base 2b model drops and
+# reorders sentences on long windows (measured 2026-10-01 on an 11 min English
+# tutorial: 0-120 s as one window 342 words, as 4x30 s 460 words; 0-343 s came
+# back as 563 words out of order, plus gave 1336). 60 s windows lose nothing.
+MAX_ASR_SECONDS_BASE = 75.0
+CHUNK_ASR_SECONDS_BASE = 60.0
 # Segment size for incremental SAA decoding (model-card "Task 4" scheme:
 # cumulative audio + prefix_text keeps speaker numbering stable).
 SAA_INCREMENT_SECONDS = 240.0
@@ -176,13 +183,7 @@ class GraniteBackend(ASRBackend):
         self._processor = None
         self._tokenizer = None
         self.model_id = ""
-        try:
-            import torch as _t
-
-            if _t.cuda.is_available():
-                _t.cuda.empty_cache()
-        except Exception:  # noqa: BLE001
-            pass
+        free_gpu_memory()
 
     # ----- Inference -----
 
@@ -248,9 +249,8 @@ class GraniteBackend(ASRBackend):
         prompt = self._build_prompt(
             word_timestamps=False, speaker_attribution=False, req=req,
         )
-        windows = _plan_windows(
-            wav, duration, *window_limits(req, MAX_ASR_SECONDS, CHUNK_ASR_SECONDS)
-        )
+        limits = (MAX_ASR_SECONDS, CHUNK_ASR_SECONDS) if self.model_id == GRANITE_PLUS else (MAX_ASR_SECONDS_BASE, CHUNK_ASR_SECONDS_BASE)
+        windows = _plan_windows(wav, duration, *window_limits(req, *limits))
         segments: list[TranscriptionSegment] = []
         for t0, t1 in windows:
             piece = wav[:, int(t0 * TARGET_SR): int(t1 * TARGET_SR)]

@@ -975,6 +975,8 @@ function speakerLabel(spk) {
   return m ? `Sprecher ${parseInt(m[1], 10) + 1}` : spk;
 }
 
+let speakerSaveTimer = 0;
+
 /* Editable name per detected speaker — renames flow into the transcript
    rendering and all downloads (they resolve labels via speakerLabel()). */
 function renderSpeakerEditor() {
@@ -997,8 +999,15 @@ function renderSpeakerEditor() {
       const v = inp.value.trim();
       if (v) state.speakerNames[spk] = v;
       else delete state.speakerNames[spk];
-      renderTranscript();
-      saveSession();
+      // Nur die Sprecher-Labels patchen statt das ganze Transkript neu zu
+      // bauen — das hält Tippen flüssig, auch während Wiedergabe/Highlighting.
+      const label = `\n[${speakerLabel(spk)}] `;
+      for (const s of els.transcript.querySelectorAll("span.spk")) {
+        if (s.dataset.spk === spk) s.textContent = label;
+      }
+      // localStorage-Write serialisiert alle Segmente — erst nach Tipp-Pause.
+      clearTimeout(speakerSaveTimer);
+      speakerSaveTimer = setTimeout(saveSession, 600);
     });
     box.appendChild(inp);
   }
@@ -1022,6 +1031,7 @@ function renderTranscript() {
         const spk = document.createElement("span");
         spk.className = "spk";
         spk.textContent = `\n[${speakerLabel(seg.speaker)}] `;
+        spk.dataset.spk = seg.speaker;
         el.appendChild(spk);
         lastSpeaker = seg.speaker;
       }
@@ -1714,6 +1724,7 @@ const MODEL_CAPS = {
   "granite-speech-4.1-2b-nar": { native: false, keywords: true, langs: LANGS_GRANITE },
   "cohere-transcribe": { native: false, keywords: false, langs: LANGS_COHERE, needsLang: true },
   "qwen3-asr": { native: false, keywords: false, langs: null },
+  "turboctc": { native: false, keywords: false, langs: ["en"], needsLang: true },
 };
 
 function applyModelCaps() {

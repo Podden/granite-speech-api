@@ -20,6 +20,7 @@ from app.audio import TARGET_SR, load_audio_bytes
 from app.backends.base import ASRBackend
 from app.backends.granite import _collapse_repeats, _plan_windows, window_limits
 from app.config import settings
+from app.lazy import free_gpu_memory
 from app.schema import TranscriptionRequest, TranscriptionSegment
 
 log = logging.getLogger(__name__)
@@ -82,11 +83,7 @@ class CohereTranscribeBackend(ASRBackend):
         self._model = None
         self._processor = None
         self.model_id = ""
-        try:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:  # noqa: BLE001
-            pass
+        free_gpu_memory()
 
     async def transcribe(
         self,

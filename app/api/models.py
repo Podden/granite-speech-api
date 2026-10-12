@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from app.backends import registry
 from app.backends.catalog import COHERE_TRANSCRIBE, FUSION, QWEN3_ASR
 from app.backends.granite import GRANITE_BASE, GRANITE_NAR, GRANITE_PLUS
+from app.backends.turboctc import GRANITE_TURBOCTC
 from app.config import settings
 from app.schema import ModelInfo, ModelList
 
@@ -20,6 +21,7 @@ async def list_models() -> ModelList:
             ModelInfo(id=GRANITE_BASE),
             ModelInfo(id=GRANITE_PLUS),
             ModelInfo(id=GRANITE_NAR),
+            ModelInfo(id=GRANITE_TURBOCTC),
             ModelInfo(id=COHERE_TRANSCRIBE, owned_by="cohere"),
             ModelInfo(id=QWEN3_ASR, owned_by="qwen"),
             ModelInfo(id=FUSION, owned_by="pipeline"),

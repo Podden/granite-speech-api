@@ -17,6 +17,7 @@ from app.backends.cohere_asr import CohereTranscribeBackend
 from app.backends.granite import GraniteBackend
 from app.backends.granite_nar import GRANITE_NAR_ID, GraniteNARBackend
 from app.backends.qwen_asr import QwenASRBackend
+from app.backends.turboctc import GRANITE_TURBOCTC, TurboCTCBackend
 from app.config import settings
 
 log = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ def _backend_class(model_id: str) -> type[ASRBackend]:
         GRANITE_NAR_ID: GraniteNARBackend,
         COHERE_TRANSCRIBE: CohereTranscribeBackend,
         QWEN3_ASR: QwenASRBackend,
+        GRANITE_TURBOCTC: TurboCTCBackend,
     }.get(model_id, GraniteBackend)
 
 
@@ -34,6 +36,9 @@ class BackendRegistry:
     def __init__(self) -> None:
         self._backend: ASRBackend | None = None
         self._lock = asyncio.Lock()
+        # Swapping models waits on this until no request is running: a swap used to unload
+        # the model under a running inference ("'NoneType' object has no attribute 'batch_decode'").
+        self._idle = asyncio.Condition(self._lock)
         self._last_used: float = 0.0
         self._active_requests: int = 0
         self._idle_task: asyncio.Task[None] | None = None
@@ -49,28 +54,34 @@ class BackendRegistry:
         return max(0.0, time.monotonic() - self._last_used)
 
     async def get(self, *, model: str | None, want_plus_features: bool) -> ASRBackend:
-        target = resolve_model_id(model, want_plus_features=want_plus_features)
         async with self._lock:
-            self._last_used = time.monotonic()
-            cls = _backend_class(target)
-            if self._backend is not None and type(self._backend) is not cls:
-                await self._backend.unload()
-                self._backend = None
+            return await self._get_locked(model, want_plus_features)
 
-            if self._backend is None:
-                self._backend = cls(dtype=settings.dtype)
+    async def _get_locked(self, model: str | None, want_plus_features: bool) -> ASRBackend:
+        target = resolve_model_id(model, want_plus_features=want_plus_features)
+        await self._idle.wait_for(
+            lambda: self._active_requests == 0 or (self._backend is not None and self._backend.model_id == target)
+        )
+        self._last_used = time.monotonic()
+        cls = _backend_class(target)
+        if self._backend is not None and type(self._backend) is not cls:
+            await self._backend.unload()
+            self._backend = None
 
-            if self._backend.model_id != target:
-                await self._backend.load(target, settings.resolved_device())
-            self._last_used = time.monotonic()
-            return self._backend
+        if self._backend is None:
+            self._backend = cls(dtype=settings.dtype)
+
+        if self._backend.model_id != target:
+            await self._backend.load(target, settings.resolved_device())
+        self._last_used = time.monotonic()
+        return self._backend
 
     async def acquire(
         self, *, model: str | None, want_plus_features: bool
     ) -> ASRBackend:
         """Return a loaded backend and pin it until ``release`` is called."""
-        backend = await self.get(model=model, want_plus_features=want_plus_features)
         async with self._lock:
+            backend = await self._get_locked(model, want_plus_features)
             self._active_requests += 1
             self._last_used = time.monotonic()
         return backend
@@ -81,6 +92,7 @@ class BackendRegistry:
             if self._active_requests > 0:
                 self._active_requests -= 1
             self._last_used = time.monotonic()
+            self._idle.notify_all()
 
     def touch(self) -> None:
         """Mark the model as just-used (call after a successful inference)."""

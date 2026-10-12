@@ -22,12 +22,18 @@ import torch
 from app.audio import TARGET_SR, load_audio_bytes
 from app.backends.base import ASRBackend
 from app.backends.granite import _plan_windows
+from app.lazy import free_gpu_memory
 from app.schema import TranscriptionRequest, TranscriptionSegment
 
 log = logging.getLogger(__name__)
 
 
 GRANITE_NAR_ID = "ibm-granite/granite-speech-4.1-2b-nar"
+# Trained on at most 120 s per input (IBM, HF discussion #3); 11 min in one shot
+# came back as 13 garbage words. Punctuation also fades near the limit (measured
+# 2026-10-01, 11 min tutorial: 132 marks with 60 s windows, 25 with 120 s), so
+# use the same ~60 s windows as the base model.
+MAX_NAR_SECONDS = 75.0
 
 
 def _to_torch_dtype(name: str) -> torch.dtype:
@@ -94,11 +100,7 @@ class GraniteNARBackend(ASRBackend):
         self._model = None
         self._extractor = None
         self.model_id = ""
-        try:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:  # noqa: BLE001
-            pass
+        free_gpu_memory()
 
     async def transcribe(
         self,
@@ -111,12 +113,11 @@ class GraniteNARBackend(ASRBackend):
             raise RuntimeError("Model not loaded")
 
         wav, duration = load_audio_bytes(req.audio_bytes)
-        # One shot by default; windows only when a forced-alignment stage
-        # follows (it needs pieces ≤ req.max_window_seconds).
-        cap = req.max_window_seconds
+        # A forced-alignment stage may ask for smaller pieces (req.max_window_seconds).
+        cap = min(req.max_window_seconds or MAX_NAR_SECONDS, MAX_NAR_SECONDS)
         windows = (
             _plan_windows(wav, duration, cap, cap * 0.8)
-            if cap and duration > cap else [(0.0, duration)]
+            if duration > cap else [(0.0, duration)]
         )
         segments: list[TranscriptionSegment] = []
 
