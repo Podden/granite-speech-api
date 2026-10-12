@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app import vram
+from app.aligner import aligner
 from app.backends import registry
 from app.backends.catalog import COHERE_TRANSCRIBE, FUSION, QWEN3_ASR
 from app.backends.granite import GRANITE_BASE, GRANITE_NAR, GRANITE_PLUS
 from app.backends.turboctc import GRANITE_TURBOCTC
 from app.config import settings
+from app.diarization import diarizer
+from app.jobs import tracker
 from app.schema import ModelInfo, ModelList
 
 router = APIRouter()
@@ -48,7 +52,16 @@ async def load_model(req: LoadRequest) -> dict:
 
 
 @router.post("/v1/models/unload", summary="Unload the current model")
-async def unload_model() -> dict:
-    """Free VRAM/RAM by unloading the currently loaded model."""
+async def unload_model(if_idle: bool = False) -> dict:
+    """Free VRAM/RAM: unload the ASR model, the diarizers and the forced aligner.
+
+    With `if_idle=true` (used by the VRAM broker to make room) nothing is touched and 409 is returned while a job
+    runs or a model is loading.
+    """
+    if if_idle:
+        if tracker.snapshot()["active_jobs"] > 0 or registry.busy or diarizer.busy or aligner.busy:
+            raise HTTPException(409, "granite-speech-api is busy")
+        await vram.release_all()  # before the unloads: the broker waits for this answer while holding its admission lock
     prev = await registry.unload()
-    return {"unloaded_model": prev, "loaded_model": None}
+    others = await diarizer.unload() + [n for n in [await aligner.unload()] if n]
+    return {"unloaded_model": prev, "unloaded_stages": others, "loaded_model": None}

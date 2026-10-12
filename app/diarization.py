@@ -185,6 +185,13 @@ class Diarizer:
     def loaded(self, engine: str) -> bool:
         return self.engines[engine].loaded
 
+    @property
+    def busy(self) -> bool:
+        return any(e.busy for e in self.engines.values())
+
+    async def unload(self) -> list[str]:
+        return [n for n in [await e.unload() for e in self.engines.values()] if n]
+
     async def warm(self, engine: str) -> None:
         await self.engines[engine].warm()
 

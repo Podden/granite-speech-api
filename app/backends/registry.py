@@ -19,6 +19,7 @@ from app.backends.granite_nar import GRANITE_NAR_ID, GraniteNARBackend
 from app.backends.qwen_asr import QwenASRBackend
 from app.backends.turboctc import GRANITE_TURBOCTC, TurboCTCBackend
 from app.config import settings
+from app import vram
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +49,11 @@ class BackendRegistry:
         return self._backend.model_id if self._backend else None
 
     @property
+    def busy(self) -> bool:
+        """A request is running or a model is being swapped."""
+        return self._active_requests > 0 or self._lock.locked()
+
+    @property
     def idle_seconds(self) -> float | None:
         if self._backend is None:
             return None
@@ -67,12 +73,18 @@ class BackendRegistry:
         if self._backend is not None and type(self._backend) is not cls:
             await self._backend.unload()
             self._backend = None
+            await vram.drop("asr")
 
         if self._backend is None:
             self._backend = cls(dtype=settings.dtype)
 
         if self._backend.model_id != target:
-            await self._backend.load(target, settings.resolved_device())
+            await vram.reserve("asr", vram.asr_mb(target))
+            try:
+                await self._backend.load(target, settings.resolved_device())
+            except BaseException:
+                await vram.drop("asr")
+                raise
         self._last_used = time.monotonic()
         return self._backend
 
@@ -107,7 +119,8 @@ class BackendRegistry:
             prev = self._backend.model_id
             await self._backend.unload()
             self._backend = None
-            return prev
+        await vram.drop("asr")
+        return prev
 
     async def shutdown(self) -> None:
         if self._idle_task is not None:
@@ -159,6 +172,7 @@ class BackendRegistry:
                     model_id, idle, ttl,
                 )
                 await backend.unload()
+                await vram.drop("asr")
         except asyncio.CancelledError:
             raise
 

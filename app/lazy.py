@@ -13,6 +13,7 @@ import time
 from collections.abc import Callable
 from typing import Any, TypeVar
 
+from app import vram
 from app.config import settings
 
 log = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ class LazyModel:
     """Subclasses implement ``_load()`` (blocking, returns the model object)."""
 
     name: str = "model"
+    vram_mb: int = 2500  # lease at the VRAM broker while loaded (subclasses override with their measured value)
 
     def __init__(self) -> None:
         self._model: Any = None
@@ -52,6 +54,10 @@ class LazyModel:
     def loaded(self) -> bool:
         return self._model is not None
 
+    @property
+    def busy(self) -> bool:
+        return self._lock.locked()
+
     def _load(self) -> Any:  # pragma: no cover — heavy, model-specific
         raise NotImplementedError
 
@@ -61,7 +67,12 @@ class LazyModel:
             loop = asyncio.get_running_loop()
             if self._model is None:
                 log.info("Loading %s", self.name)
-                self._model = await loop.run_in_executor(None, self._load)
+                await vram.reserve(self.name, self.vram_mb)
+                try:
+                    self._model = await loop.run_in_executor(None, self._load)
+                except BaseException:
+                    await vram.drop(self.name)
+                    raise
                 log.info("%s ready", self.name)
             self._last_used = time.monotonic()
             model = self._model
@@ -81,7 +92,8 @@ class LazyModel:
             log.info("Unloading %s", self.name)
             self._model = None
             free_gpu_memory()
-            return self.name
+        await vram.drop(self.name)
+        return self.name
 
     def start_idle_monitor(self) -> None:
         if settings.idle_unload_seconds <= 0 or self._idle_task is not None:

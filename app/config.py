@@ -57,6 +57,22 @@ class Settings(BaseSettings):
     idle_unload_seconds: int = 600
     idle_check_interval: int = 30
 
+    # VRAM broker (cave2): lease GPU memory before a model is loaded, see app/vram.py. Empty socket = off.
+    vram_broker_sock: str = ""
+    vram_gpu: int = 1
+    # Eviction order at the broker: the lowest priority is unloaded first (iris 10, rtspeech 20, granite 30, ollama 40).
+    vram_priority: int = 30
+    vram_wait_seconds: float = 120
+    # How the broker reaches this service from the host (published port), used for eviction.
+    vram_public_url: str = "http://127.0.0.1:8011"
+    # Lease per ASR model in MB (measured on an RTX A6000, bfloat16, incl. activations); the diarizer and aligner
+    # are leased on top (LazyModel.vram_mb).
+    vram_asr_default_mb: int = 5500
+    vram_asr_mb: dict[str, int] = {
+        "ibm-granite/granite-speech-5.0-470m-turboctc": 2000,
+        "ibm-granite/granite-speech-4.1-2b-nar": 5800,
+    }
+
     def resolved_device(self) -> str:
         if self.device == "auto":
             try:
