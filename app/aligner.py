@@ -76,6 +76,8 @@ def _restore_original_tokens(stamps: list[dict], text: str) -> list[str]:
 
 
 class ForcedAligner(LazyModel):
+    vram_mb = 2200
+
     def __init__(self) -> None:
         super().__init__()
         self.name = settings.aligner_model

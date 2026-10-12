@@ -70,7 +70,8 @@ class Settings(BaseSettings):
     vram_asr_default_mb: int = 5500
     vram_asr_mb: dict[str, int] = {
         "ibm-granite/granite-speech-5.0-470m-turboctc": 2000,
-        "ibm-granite/granite-speech-4.1-2b-nar": 5800,
+        "ibm-granite/granite-speech-4.1-2b-nar": 6200,
+        "Qwen/Qwen3-ASR-1.7B-hf": 6000,
     }
 
     def resolved_device(self) -> str:

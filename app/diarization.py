@@ -36,6 +36,8 @@ class Turn:
 
 
 class PyannoteDiarizer(LazyModel):
+    vram_mb = 1500
+
     def __init__(self) -> None:
         super().__init__()
         self.name = settings.diarization_model
@@ -127,6 +129,8 @@ def _use_device() -> None:
 
 
 class NemotronDiarizer(LazyModel):
+    vram_mb = 1500
+
     def __init__(self) -> None:
         super().__init__()
         self.name = settings.nemotron_diarization_model
