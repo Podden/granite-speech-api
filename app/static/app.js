@@ -36,9 +36,10 @@ const els = {
 };
 
 const state = {
-  file: null,          // original File
-  uploadBlob: null,    // what actually gets uploaded (WAV or original)
-  uploadName: null,
+  file: null,          // original File (first part of a group)
+  files: [],           // all parts of the current recording, in order
+  uploads: null,       // [{blob, name}] — one prepared upload, or the original parts
+  playBlob: null,      // playback source (original file, or joined audio of a group)
   duration: null,      // seconds
   peaks: null,         // waveform peaks for drawing
   maxSeconds: 600,     // refreshed from /health
@@ -162,10 +163,17 @@ function fmtTs(t, sep) {
 
 /* ── File preparation ───────────────────────────────────── */
 
-async function onFileSelected(file) {
+/* Prepares one recording (one file, or the parts of an interrupted one) for
+   upload. Parts are decoded and joined here, so upload, waveform and player
+   all cover the whole recording. Returns false if a newer call superseded it. */
+let prepareToken = 0;
+
+async function prepareFiles(files) {
+  const token = ++prepareToken;
+  const file = files[0];
   // Gleiche Datei wie das gespeicherte Transkript → Ergebnis stehen lassen,
   // damit Wiedergabe und Wortsprung nach einem Reload weitergehen.
-  const keepResult = sameFile(sessionFileSig, file) &&
+  const keepResult = sameFiles(sessionFileSig, files) &&
     (state.segments.length > 0 || !!state.resultText);
   if (keepResult) {
     els.cardStatus.hidden = true;
@@ -176,7 +184,9 @@ async function onFileSelected(file) {
     resetResult();
   }
   state.file = file;
-  state.uploadBlob = null;
+  state.files = files;
+  state.uploads = null;
+  state.playBlob = null;
   state.duration = null;
   els.fileError.hidden = true;
   els.btnStart.disabled = true;
@@ -184,33 +194,43 @@ async function onFileSelected(file) {
   els.dzIdle.hidden = true;
   els.dzFile.hidden = false;
   els.dropzone.classList.add("has-file");
-  els.fileName.textContent = file.name;
-  els.fileInfo.textContent = `${fmtSize(file.size)} — analysiere…`;
-  log(`Datei gewählt: ${file.name} (${fmtSize(file.size)}, ${file.type || "unbekannter Typ"})`);
+  const totalSize = files.reduce((n, f) => n + f.size, 0);
+  els.fileName.textContent = files.length > 1 ? `${file.name} (${files.length} Teile)` : file.name;
+  els.fileInfo.textContent = `${fmtSize(totalSize)} — analysiere…`;
+  for (const f of files) {
+    log(`Datei gewählt: ${f.name} (${fmtSize(f.size)}, ${f.type || "unbekannter Typ"})`);
+  }
 
-  const isVideo = /^video\//.test(file.type) || /\.(mp4|mkv|mov|webm|avi|m4v)$/i.test(file.name);
+  const isVideo = files.some((f) =>
+    /^video\//.test(f.type) || /\.(mp4|mkv|mov|webm|avi|m4v)$/i.test(f.name));
 
   try {
-    const buf = await file.arrayBuffer();
     // Decoding into a 16 kHz context resamples for free — exactly what the
     // ASR model expects, and it shrinks the upload.
-    const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-    const audio = await ctx.decodeAudioData(buf);
-    ctx.close();
+    const monos = [];
+    let sampleRate = 16000;
+    for (const f of files) {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      const audio = await ctx.decodeAudioData(await f.arrayBuffer());
+      ctx.close();
+      if (token !== prepareToken) return false;
+      monos.push(downmix(audio));
+      sampleRate = audio.sampleRate;
+    }
+    const mono = monos.length === 1 ? monos[0] : concatSamples(monos);
 
-    state.duration = audio.duration;
-    const mono = downmix(audio);
+    state.duration = mono.length / sampleRate;
     state.peaks = computePeaks(mono, 600);
     drawWaveform(0);
 
     // Smallest upload wins: Opus (48 kbit/s, WebCodecs) → original audio
     // file → 16 kHz mono WAV as universal fallback.
     const base = file.name.replace(/\.[^.]+$/, "");
-    const wav = encodeWav(mono, audio.sampleRate);
+    const wav = encodeWav(mono, sampleRate);
     let upload = { blob: wav, name: base + ".wav", label: "16 kHz mono WAV" };
-    if (await oggOpusSupported(audio.sampleRate)) {
+    if (await oggOpusSupported(sampleRate)) {
       try {
-        const ogg = await encodeOggOpus(mono, audio.sampleRate);
+        const ogg = await encodeOggOpus(mono, sampleRate);
         if (ogg.size < upload.blob.size) {
           upload = { blob: ogg, name: base + ".ogg", label: "Opus 48 kbit/s" };
         }
@@ -218,24 +238,29 @@ async function onFileSelected(file) {
         log(`Opus-Kompression fehlgeschlagen (${err.message}) — nutze WAV.`, "warn");
       }
     }
-    if (!isVideo && file.size < upload.blob.size) {
+    if (token !== prepareToken) return false;
+    if (files.length === 1 && !isVideo && file.size < upload.blob.size) {
       upload = { blob: file, name: file.name, label: "Original" };
     }
-    state.uploadBlob = upload.blob;
-    state.uploadName = upload.name;
-    log(`Audio vorbereitet: ${fmtDuration(audio.duration)}, Upload als ${upload.label} ` +
-        `(${fmtSize(upload.blob.size)} statt ${fmtSize(file.size)} — ` +
-        `${Math.max(0, 100 - (upload.blob.size / file.size) * 100).toFixed(0)} % gespart)`);
+    state.uploads = [upload];
+    // A single file plays from the original, a group from the joined audio.
+    state.playBlob = files.length === 1 ? file : upload.blob;
+    log(`Audio vorbereitet: ${fmtDuration(state.duration)}` +
+        (files.length > 1 ? ` aus ${files.length} Teilen` : "") +
+        `, Upload als ${upload.label} (${fmtSize(upload.blob.size)} statt ${fmtSize(totalSize)} — ` +
+        `${Math.max(0, 100 - (upload.blob.size / totalSize) * 100).toFixed(0)} % gespart)`);
     els.fileInfo.textContent =
-      `${fmtDuration(audio.duration)} · Upload: ${fmtSize(state.uploadBlob.size)} (${upload.label})` +
-      (isVideo ? ` · Tonspur aus ${fmtSize(file.size)} Video` : "");
+      `${fmtDuration(state.duration)} · Upload: ${fmtSize(upload.blob.size)} (${upload.label})` +
+      (isVideo ? ` · Tonspur aus ${fmtSize(totalSize)} Video` : "");
   } catch (err) {
+    if (token !== prepareToken) return false;
+    // Server joins the original parts itself (repeated `file` fields).
     log(`Browser-Dekodierung fehlgeschlagen (${err.message || err.name}) — Original wird hochgeladen, der Server extrahiert die Tonspur.`, "warn");
-    state.uploadBlob = file;
-    state.uploadName = file.name;
+    state.uploads = files.map((f) => ({ blob: f, name: f.name }));
+    state.playBlob = files.length === 1 ? file : null;
     state.peaks = null;
     drawWaveform(0);
-    els.fileInfo.textContent = `${fmtSize(file.size)} · Dauer unbekannt (Server prüft)`;
+    els.fileInfo.textContent = `${fmtSize(totalSize)} · Dauer unbekannt (Server prüft)`;
   }
 
   setupPlayer();
@@ -245,9 +270,17 @@ async function onFileSelected(file) {
       `Die Aufnahme ist ${fmtDuration(state.duration)} lang — der Server akzeptiert maximal ` +
       `${fmtDuration(state.maxSeconds)}. Bitte die Datei vorher kürzen oder aufteilen.`
     );
-    return;
+    return true;
   }
   els.btnStart.disabled = false;
+  return true;
+}
+
+function concatSamples(arrays) {
+  const out = new Float32Array(arrays.reduce((n, a) => n + a.length, 0));
+  let off = 0;
+  for (const a of arrays) { out.set(a, off); off += a.length; }
+  return out;
 }
 
 function showFileError(msg) {
@@ -302,7 +335,7 @@ function setupPlayer() {
   if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
   // The original file is the playback source — the browser just decoded it,
   // so it can play it (video files play their audio track in <audio>).
-  const src = state.file;
+  const src = state.playBlob;
   if (!src) return;
   state.audioUrl = URL.createObjectURL(src);
   audioEl.src = state.audioUrl;
@@ -678,7 +711,7 @@ function stopQueuePolling() {
 
 function buildFormData() {
   const fd = new FormData();
-  fd.append("file", state.uploadBlob, state.uploadName);
+  for (const u of state.uploads) fd.append("file", u.blob, u.name);
   fd.append("stream", "true");
   appendOptions(fd);
   return fd;
@@ -724,7 +757,10 @@ function startTranscription() {
     runBatch().catch((e) => log(`Batch-Fehler: ${e.message}`, "err"));
     return;
   }
-  transcribeCurrent().catch(() => { /* UI already updated by fail() */ });
+  const item = state.queue[0];
+  const mark = (status) => { if (item) { item.status = status; renderBatchList(); } };
+  mark("läuft");
+  transcribeCurrent().then(() => mark("fertig"), () => mark("fehler"));
 }
 
 function transcribeCurrent() {
@@ -735,7 +771,7 @@ function transcribeCurrent() {
 }
 
 function beginTranscription() {
-  if (!state.uploadBlob) return;
+  if (!state.uploads) return;
   resetResult();
   els.cardStatus.hidden = false;
   els.btnStart.disabled = true;
@@ -751,7 +787,8 @@ function beginTranscription() {
   state.resultText = "";
 
   const fd = buildFormData();
-  log(`Starte Upload: ${state.uploadName} (${fmtSize(state.uploadBlob.size)})`);
+  const upSize = state.uploads.reduce((n, u) => n + u.blob.size, 0);
+  log(`Starte Upload: ${state.uploads.map((u) => u.name).join(" + ")} (${fmtSize(upSize)})`);
   const fields = [];
   for (const [k, v] of fd.entries()) {
     fields.push(`${k}=${v instanceof Blob ? `<blob ${v.size} B, ${v.type || "?"}>` : v}`);
@@ -952,6 +989,9 @@ function cancelTranscription() {
   els.cardStatus.hidden = true;
   els.btnStart.disabled = false;
   log("Abgebrochen.");
+  // Otherwise a running queue waits forever on the aborted request.
+  state.finishCb?.reject(new Error("abgebrochen"));
+  state.finishCb = null;
 }
 
 /* ── Result rendering & export ──────────────────────────── */
@@ -1152,9 +1192,15 @@ function sameFile(sig, file) {
     sig.lastModified === b.lastModified;
 }
 
+// Sessions from before groups stored a single signature object.
+function sameFiles(sig, files) {
+  const sigs = Array.isArray(sig) ? sig : [sig];
+  return sigs.length === files.length && files.every((f, i) => sameFile(sigs[i], f));
+}
+
 function saveSession() {
   try {
-    sessionFileSig = fileSig(state.file);
+    sessionFileSig = state.files.map(fileSig);
     const json = JSON.stringify({
       v: 1,
       savedAt: Date.now(),
@@ -1163,7 +1209,7 @@ function saveSession() {
       speakerNames: state.speakerNames || {},
       duration: state.duration,
       processingSecs: state.processingSecs,
-      fileName: state.file?.name || state.uploadName || null,
+      fileName: state.file?.name || null,
       file: sessionFileSig,
     });
     if (json.length > 4_000_000) return; // localStorage-Quota nicht sprengen
@@ -1509,7 +1555,7 @@ async function sendFeedback() {
     context: {
       filename: state.file?.name || null,
       duration_seconds: state.duration ? Math.round(state.duration) : null,
-      upload_bytes: state.uploadBlob?.size || null,
+      upload_bytes: state.uploads?.reduce((n, u) => n + u.blob.size, 0) || null,
       processing_seconds: state.processingSecs ?? null,
       segments: state.segments.length,
       status: els.statusText.textContent.trim() || null,
@@ -1540,7 +1586,9 @@ async function sendFeedback() {
   }
 }
 
-function resetFile() {
+/* Drops the prepared recording (player, upload, waveform), keeps the queue. */
+function clearPrepared() {
+  prepareToken++;
   resetResult();
   audioEl.pause();
   audioEl.removeAttribute("src");
@@ -1549,11 +1597,20 @@ function resetFile() {
   playTime.hidden = true;
   btnPlayTr.disabled = true;
   state.file = null;
-  state.uploadBlob = null;
+  state.files = [];
+  state.uploads = null;
+  state.playBlob = null;
   state.peaks = null;
   state.duration = null;
+  els.fileError.hidden = true;
+}
+
+function resetFile() {
+  clearPrepared();
   state.queue = [];
   renderBatchList();
+  els.cardResult.classList.remove("batch-mode");
+  clearBatchResults();
   els.dzIdle.hidden = false;
   els.dzFile.hidden = true;
   els.dropzone.classList.remove("has-file");
@@ -1561,87 +1618,198 @@ function resetFile() {
   els.btnStart.disabled = true;
 }
 
-/* ── Batch (mehrere Dateien nacheinander) ───────────────── */
+/* ── Warteschlange ──────────────────────────────────────────
+   Jeder Eintrag ist ein Transkript aus einer oder mehreren Dateien (Teile
+   einer unterbrochenen Aufnahme). Ein einzelner Eintrag läuft in der normalen
+   Ergebnisansicht, mehrere nacheinander im Batch-Modus. */
+
+let batchRunning = false;
+const isBusy = () => batchRunning || !!state.xhr;
+const groupName = (files) => files.length > 1 ? `${files[0].name} (${files.length} Teile)` : files[0].name;
 
 function onFilesSelected(files) {
   if (!files.length) return;
   warmup();
-  if (files.length === 1) {
+  // Neue Dateien landen hinten in der Schlange, solange dort noch etwas wartet;
+  // ist alles erledigt, beginnt eine neue Schlange.
+  if (!state.queue.some((i) => i.status === "wartet" || i.status === "läuft")) {
     state.queue = [];
-    renderBatchList();
-    els.cardResult.classList.remove("batch-mode");
     clearBatchResults();
-    onFileSelected(files[0]);
+  }
+  const groups = autoGroup(files);
+  for (const g of groups) state.queue.push({ files: g, status: "wartet", result: null, checked: false });
+  const merged = groups.filter((g) => g.length > 1);
+  log(`${files.length} Datei(en) eingereiht` +
+      (merged.length ? ` — ${merged.length} als zusammenhängende Aufnahme erkannt` : "") + ".");
+  queueChanged();
+}
+
+function queueChanged() {
+  renderBatchList();
+  if (isBusy()) return;
+  const q = state.queue;
+  if (!q.length) { resetFile(); return; }
+  if (q.length === 1) {
+    els.cardResult.classList.remove("batch-mode");
+    const f = q[0].files;
+    const same = f.length === state.files.length && f.every((x, i) => x === state.files[i]);
+    if (!same) prepareFiles(f);
     return;
   }
-  resetFile();
+  if (state.files.length) clearPrepared();
   els.cardResult.classList.add("batch-mode");
-  state.queue = files.map((f) => ({ file: f, status: "wartet", result: null }));
   els.dzIdle.hidden = true;
   els.dzFile.hidden = false;
   els.dropzone.classList.add("has-file");
-  els.fileName.textContent = `${files.length} Dateien`;
-  const total = files.reduce((s, f) => s + f.size, 0);
+  const nFiles = q.reduce((n, i) => n + i.files.length, 0);
+  const total = q.reduce((n, i) => n + i.files.reduce((m, f) => m + f.size, 0), 0);
+  els.fileName.textContent = `${q.length} Transkripte` + (nFiles > q.length ? ` aus ${nFiles} Dateien` : "");
   els.fileInfo.textContent = `${fmtSize(total)} gesamt — werden nacheinander verarbeitet`;
-  state.peaks = null;
   drawWaveform(0);
-  renderBatchList();
-  els.btnStart.disabled = false;
-  log(`${files.length} Dateien ausgewählt (Batch).`);
+  els.btnStart.disabled = !q.some((i) => i.status === "wartet" || i.status === "fehler");
 }
 
 function renderBatchList() {
   const ul = $("#batch-list");
-  if (!state.queue.length) { ul.hidden = true; ul.textContent = ""; return; }
-  ul.hidden = false;
+  const q = state.queue;
+  const show = q.length > 1 || q[0]?.files.length > 1;
+  ul.hidden = !show;
+  $("#queue-tools").hidden = !show;
   ul.textContent = "";
+  if (!show) return;
   const icons = { wartet: "○", "läuft": "◐", fertig: "✓", fehler: "✗" };
-  for (const item of state.queue) {
+  const btn = (act, label, title, disabled) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn-ghost btn-mini";
+    b.dataset.act = act;
+    b.textContent = label;
+    b.title = title;
+    b.setAttribute("aria-label", title);
+    b.disabled = !!disabled;
+    return b;
+  };
+  q.forEach((item, i) => {
+    const editable = item.status === "wartet" || item.status === "fehler";
     const li = document.createElement("li");
     li.className = `bstatus-${item.status === "läuft" ? "laeuft" : item.status}`;
+    li.dataset.i = i;
+    const row = document.createElement("div");
+    row.className = "q-row";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = item.checked;
+    cb.disabled = !editable;
+    cb.setAttribute("aria-label", `${groupName(item.files)} markieren`);
     const ic = document.createElement("span"); ic.className = "b-ic"; ic.textContent = icons[item.status];
-    const nm = document.createElement("span"); nm.className = "b-name"; nm.textContent = item.file.name;
+    const nm = document.createElement("span"); nm.className = "b-name"; nm.textContent = groupName(item.files);
     const st = document.createElement("span"); st.className = "b-st mono muted";
-    st.textContent = `${fmtSize(item.file.size)} · ${item.status}`;
-    li.append(ic, nm, st);
+    st.textContent = `${fmtSize(item.files.reduce((n, f) => n + f.size, 0))} · ${item.status}`;
+    row.append(cb, ic, nm, st);
+    if (editable && item.files.length > 1) row.append(btn("split", "Auflösen", "In Einzeldateien auflösen"));
+    if (editable) row.append(btn("remove", "×", "Aus der Warteschlange entfernen"));
+    li.append(row);
+    if (item.files.length > 1) {
+      const ol = document.createElement("ol");
+      ol.className = "q-parts";
+      item.files.forEach((f, p) => {
+        const pl = document.createElement("li");
+        pl.dataset.p = p;
+        const pn = document.createElement("span"); pn.className = "b-name"; pn.textContent = f.name;
+        const ps = document.createElement("span"); ps.className = "b-st mono muted"; ps.textContent = fmtSize(f.size);
+        pl.append(pn, ps);
+        if (editable) {
+          pl.append(btn("up", "↑", "Teil nach vorn", p === 0),
+                    btn("down", "↓", "Teil nach hinten", p === item.files.length - 1));
+        }
+        ol.appendChild(pl);
+      });
+      li.append(ol);
+    }
     ul.appendChild(li);
-  }
+  });
+  $("#btn-merge").disabled = q.filter((i) => i.checked).length < 2;
 }
 
+function mergeChecked() {
+  const sel = state.queue.filter((i) => i.checked);
+  if (sel.length < 2) return;
+  const first = sel[0];
+  first.files = sel.flatMap((i) => i.files);
+  first.checked = false;
+  first.status = "wartet";
+  state.queue = state.queue.filter((i) => i === first || !sel.includes(i));
+  log(`${sel.length} Einträge zu einem Transkript zusammengefügt.`);
+  queueChanged();
+}
+
+$("#batch-list").addEventListener("change", (e) => {
+  const li = e.target.closest("li[data-i]");
+  if (!li || e.target.type !== "checkbox") return;
+  state.queue[+li.dataset.i].checked = e.target.checked;
+  $("#btn-merge").disabled = state.queue.filter((i) => i.checked).length < 2;
+});
+
+$("#batch-list").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  const i = +b.closest("li[data-i]").dataset.i;
+  const item = state.queue[i];
+  const p = +b.closest("li[data-p]")?.dataset.p;
+  if (b.dataset.act === "remove") state.queue.splice(i, 1);
+  else if (b.dataset.act === "split") {
+    state.queue.splice(i, 1, ...item.files.map((f) => ({ files: [f], status: "wartet", result: null, checked: false })));
+  } else {
+    const to = b.dataset.act === "up" ? p - 1 : p + 1;
+    [item.files[p], item.files[to]] = [item.files[to], item.files[p]];
+    item.files = [...item.files]; // new array → the prepared audio no longer matches
+  }
+  queueChanged();
+});
+
+$("#btn-merge").addEventListener("click", mergeChecked);
+$("#btn-add").addEventListener("click", () => els.fileInput.click());
+
+const nextPending = () => state.queue.find((i) => i.status === "wartet");
+
 async function runBatch() {
-  const queue = state.queue;
+  batchRunning = true;
+  for (const i of state.queue) if (i.status === "fehler") i.status = "wartet";
   els.cardResult.classList.add("batch-mode");
-  clearBatchResults();
-  for (const item of queue) {
+  let item;
+  // Re-reads the queue each round: files added during the run are picked up.
+  while ((item = nextPending())) {
     item.status = "läuft";
     renderBatchList();
+    const name = groupName(item.files);
     try {
-      await onFileSelected(item.file);
-      state.queue = queue; // onFileSelected leaves the queue alone, keep reference
+      await prepareFiles(item.files);
       els.btnStart.disabled = true;
-      if (!state.uploadBlob) throw new Error("Datei konnte nicht gelesen werden");
+      if (!state.uploads) throw new Error("Datei konnte nicht gelesen werden");
       if (state.duration && state.duration > state.maxSeconds) throw new Error("zu lang für den Server");
       await transcribeCurrent();
       item.result = {
         segments: [...state.segments],
         text: plainText(),
         duration: state.duration,
-        name: item.file.name,
+        name: item.files[0].name,
       };
       item.status = "fertig";
       appendBatchResult(item);
     } catch (e) {
       item.status = "fehler";
-      log(`${item.file.name}: ${e.message}`, "err");
+      log(`${name}: ${e.message}`, "err");
     }
     renderBatchList();
   }
+  batchRunning = false;
   els.btnStart.disabled = false;
   els.transcript.textContent = "";
-  const ok = queue.filter((i) => i.status === "fertig").length;
-  setPhase("done", "Alle Dateien verarbeitet.", `${ok}/${queue.length} erfolgreich`);
+  const q = state.queue;
+  const ok = q.filter((i) => i.status === "fertig").length;
+  setPhase("done", "Alle Dateien verarbeitet.", `${ok}/${q.length} erfolgreich`);
   setStep("done", "done");
-  log(`Batch abgeschlossen: ${ok}/${queue.length} erfolgreich.`);
+  log(`Batch abgeschlossen: ${ok}/${q.length} erfolgreich.`);
 }
 
 function clearBatchResults() { $("#batch-results").textContent = ""; }
@@ -1652,7 +1820,7 @@ function appendBatchResult(item) {
   d.className = "batch-result";
   d.open = true;
   const s = document.createElement("summary");
-  s.textContent = `✓ ${item.result.name}`;
+  s.textContent = `✓ ${groupName(item.files)}`;
   const body = document.createElement("div");
   body.className = "transcript";
   body.textContent = item.result.text;
@@ -1685,14 +1853,16 @@ function appendBatchResult(item) {
 /* ── Wiring ─────────────────────────────────────────────── */
 
 els.dropzone.addEventListener("click", (e) => {
-  if (e.target.closest("#btn-reset")) return;
-  if (!state.file) els.fileInput.click();
+  if (e.target.closest("#btn-reset, #batch-list, #queue-tools")) return;
+  if (!state.queue.length) els.fileInput.click();
 });
 els.dropzone.addEventListener("keydown", (e) => {
-  if ((e.key === "Enter" || e.key === " ") && !state.file) { e.preventDefault(); els.fileInput.click(); }
+  if (e.target !== els.dropzone) return;
+  if ((e.key === "Enter" || e.key === " ") && !state.queue.length) { e.preventDefault(); els.fileInput.click(); }
 });
 els.fileInput.addEventListener("change", () => {
   if (els.fileInput.files.length) onFilesSelected(Array.from(els.fileInput.files));
+  els.fileInput.value = ""; // same file can be added again
 });
 ["dragover", "dragenter"].forEach((t) =>
   els.dropzone.addEventListener(t, (e) => { e.preventDefault(); els.dropzone.classList.add("dragover"); })

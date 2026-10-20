@@ -112,6 +112,36 @@ def test_transcriptions_rejects_empty(client: TestClient) -> None:
     assert r.status_code == 400
 
 
+def test_concat_audio_joins_parts_in_order() -> None:
+    import soundfile as sf
+
+    from app.audio import concat_audio
+
+    buf = io.BytesIO()
+    sf.write(buf, np.full(8000, 0.5, dtype=np.float32), 16000, format="WAV")
+    loud = buf.getvalue()
+    data, duration = concat_audio([_silence_wav(1.0), loud])
+    wav, sr = sf.read(io.BytesIO(data), dtype="float32")
+    assert sr == 16000 and duration == pytest.approx(1.5)
+    assert np.abs(wav[:16000]).max() == 0 and wav[16000:].min() > 0.4
+
+
+def test_transcriptions_joins_multiple_parts(client: TestClient, monkeypatch) -> None:
+    from app.config import settings
+
+    # 2 × 1 s parts exceed a 1.5 s limit only if they are joined.
+    monkeypatch.setattr(settings, "max_audio_seconds", 1.5)
+    r = client.post(
+        "/v1/audio/transcriptions",
+        files=[
+            ("file", ("a.wav", _silence_wav(1.0), "audio/wav")),
+            ("file", ("b.wav", _silence_wav(1.0), "audio/wav")),
+        ],
+    )
+    assert r.status_code == 413
+    assert "2.0s" in r.json()["detail"]
+
+
 def test_feedback_roundtrip(client: TestClient, tmp_path, monkeypatch) -> None:
     from app.config import settings
 

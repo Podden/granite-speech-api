@@ -97,5 +97,19 @@ def get_duration(data: bytes) -> float:
         return dur
 
 
+def concat_audio(parts: list[bytes]) -> tuple[bytes, float]:
+    """Decode `parts` and join them, in order, into one 16 kHz mono PCM16 WAV.
+
+    Used when a recording was split into several files (e.g. an interrupted
+    meeting): the pipeline then sees one continuous audio, so timestamps run
+    through and diarization keeps speaker labels consistent across parts.
+    """
+    wavs = [load_audio_bytes(p)[0] for p in parts]
+    wav = torch.cat(wavs, dim=-1)
+    buf = io.BytesIO()
+    sf.write(buf, wav[0].numpy(), TARGET_SR, format="WAV", subtype="PCM_16")
+    return buf.getvalue(), wav.shape[-1] / TARGET_SR
+
+
 def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None

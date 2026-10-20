@@ -31,6 +31,8 @@
       <div class="dz-idle" id="dz-idle">
         <p class="dz-main">Audio- oder Videodatei hierher ziehen</p>
         <p class="dz-sub">oder klicken zum Ausw&auml;hlen &mdash; mp3, wav, m4a, opus, mp4, mkv, mov &hellip;</p>
+        <p class="dz-sub">Mehrere Dateien werden nacheinander transkribiert. Teile einer
+           unterbrochenen Aufnahme lassen sich zu einem Transkript zusammenf&uuml;gen.</p>
         <p class="dz-note">Bei Videos wird die Tonspur direkt im Browser extrahiert,
            es wird kein Video hochgeladen. Konvertiert wird immer verlustfrei in das
            native Modellformat (16&nbsp;kHz mono WAV) &mdash; mehr Qualit&auml;t bringt
@@ -48,6 +50,11 @@
         </div>
         <audio id="audio-player" preload="metadata" hidden></audio>
         <ul class="batch-list" id="batch-list" hidden></ul>
+        <div class="queue-tools" id="queue-tools" hidden>
+          <button type="button" class="btn-ghost" id="btn-merge" disabled
+                  title="Markierte Einträge als ein Transkript verarbeiten (Reihenfolge wie in der Liste)">Markierte zusammenf&uuml;gen</button>
+          <button type="button" class="btn-ghost" id="btn-add">+ Dateien hinzuf&uuml;gen</button>
+        </div>
       </div>
     </div>
     <p class="field-error" id="file-error" hidden></p>
@@ -281,6 +288,7 @@
 </footer>
 
 <script src="opus.js"></script>
+<script src="grouping.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

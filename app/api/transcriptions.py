@@ -9,7 +9,7 @@ from fastapi import APIRouter, Form, HTTPException, UploadFile, File
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from app.aligner import aligner as forced_aligner
-from app.audio import get_duration
+from app.audio import concat_audio, get_duration
 from app.backends import registry
 from app.backends.catalog import is_granite, preset_aligner, resolve_model_id
 from app.config import settings
@@ -68,8 +68,14 @@ TranslateTarget = Literal[
 )
 async def transcribe(
     file: Annotated[
-        UploadFile,
-        File(description="Audio (or video) file to transcribe: wav, mp3, ogg/opus, flac, m4a, mp4, …"),
+        list[UploadFile],
+        File(
+            description=(
+                "Audio (or video) file to transcribe: wav, mp3, ogg/opus, flac, m4a, mp4, …. "
+                "Repeat the field to send a recording split into several parts: they are "
+                "joined in the given order and transcribed as one audio."
+            ),
+        ),
     ],
     model: Annotated[
         str | None,
@@ -210,12 +216,16 @@ async def transcribe(
     Multipart form; everything except `file` is optional. Extras over OpenAI:
     speaker attribution, word timestamps, speech translation and NDJSON streaming.
     """
-    audio_bytes = await file.read()
-    if not audio_bytes:
+    parts = [await f.read() for f in file]
+    if not parts or not all(parts):
         raise HTTPException(status_code=400, detail="Empty audio file")
 
     try:
-        duration = get_duration(audio_bytes)
+        if len(parts) == 1:
+            audio_bytes = parts[0]
+            duration = get_duration(audio_bytes)
+        else:
+            audio_bytes, duration = await asyncio.to_thread(concat_audio, parts)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid audio: {exc}") from exc
 
@@ -235,7 +245,7 @@ async def transcribe(
 
     req = TranscriptionRequest(
         audio_bytes=audio_bytes,
-        filename=file.filename or "audio",
+        filename=file[0].filename or "audio",
         model=model or settings.default_model,
         language=language,
         response_format=response_format,
