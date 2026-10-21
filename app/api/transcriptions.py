@@ -216,6 +216,13 @@ async def transcribe(
     Multipart form; everything except `file` is optional. Extras over OpenAI:
     speaker attribution, word timestamps, speech translation and NDJSON streaming.
     """
+    if len(file) > settings.max_upload_parts:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Too many file parts: {len(file)} > {settings.max_upload_parts}"
+            ),
+        )
     parts = [await f.read() for f in file]
     if not parts or not all(parts):
         raise HTTPException(status_code=400, detail="Empty audio file")

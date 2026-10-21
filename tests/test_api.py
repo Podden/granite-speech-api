@@ -142,6 +142,32 @@ def test_transcriptions_joins_multiple_parts(client: TestClient, monkeypatch) ->
     assert "2.0s" in r.json()["detail"]
 
 
+def test_transcriptions_rejects_too_many_parts(
+    client: TestClient, monkeypatch
+) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "max_upload_parts", 3)
+
+    # The guard must fire before any part is read/decoded, so even tiny
+    # (otherwise invalid) parts are rejected on count alone.
+    def _boom(*_a, **_k):  # pragma: no cover - must never be reached
+        raise AssertionError("parts were decoded despite exceeding the cap")
+
+    monkeypatch.setattr("app.api.transcriptions.get_duration", _boom)
+    monkeypatch.setattr("app.api.transcriptions.concat_audio", _boom)
+
+    r = client.post(
+        "/v1/audio/transcriptions",
+        files=[
+            ("file", (f"p{i}.wav", b"x", "audio/wav"))
+            for i in range(settings.max_upload_parts + 1)
+        ],
+    )
+    assert r.status_code == 400
+    assert "Too many file parts" in r.json()["detail"]
+
+
 def test_feedback_roundtrip(client: TestClient, tmp_path, monkeypatch) -> None:
     from app.config import settings
 
