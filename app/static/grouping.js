@@ -14,6 +14,7 @@ const TS_RE = /(\d{4})-(\d{2})-(\d{2})[ _T](\d{2})[-_.:](\d{2})[-_.:](\d{2})/;
 const PART_RE = /^(.*?)[\s_.-]*(?:part|teil|pt|abschnitt|segment)[\s_.-]*(\d{1,3})$/i;
 const CONT_MAX_GAP_MS = 15 * 60 * 1000; // pause between stop and restart
 const CONT_SLACK_MS = 2 * 60 * 1000;    // clock jitter: next start slightly before prev mtime
+const PART_MAX_GAP_MS = 12 * 60 * 60 * 1000; // parts of one recording land within a session, not days apart
 
 function nameStartMs(name) {
   const m = name.match(TS_RE);
@@ -39,7 +40,15 @@ function isContinuation(prev, next) {
   }
   const pa = partKey(prev.name);
   const pb = partKey(next.name);
-  return !!pa && !!pb && pa.key === pb.key && pb.n === pa.n + 1;
+  if (!pa || !pb || pa.key !== pb.key || pb.n !== pa.n + 1) return false;
+  // Plausibility guard: unlike the timestamp branch there is no name-derived
+  // start time, so consecutive part numbers alone would merge files that merely
+  // share a base name (e.g. call_part1.mp3 on Monday, call_part2.mp3 on
+  // Wednesday). Bound continuation by file mtime: real parts are written within
+  // one session. When mtime is unavailable, do not auto-group (user can merge).
+  if (prev.lastModified == null || next.lastModified == null) return false;
+  const gap = next.lastModified - prev.lastModified;
+  return gap >= -CONT_SLACK_MS && gap <= PART_MAX_GAP_MS;
 }
 
 /* files: [{name, lastModified}] → array of groups (arrays), natural name order. */
