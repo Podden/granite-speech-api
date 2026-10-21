@@ -29,3 +29,35 @@ test("explicit part markers group, plain numbering does not", () => {
     ["x_part_3.mp3"],
   ]);
 });
+
+test("part files written days apart stay separate", () => {
+  const files = [
+    { name: "call_part1.mp3", lastModified: at("2026-10-19T09:00:00") }, // Monday
+    { name: "call_part2.mp3", lastModified: at("2026-10-21T14:00:00") }, // Wednesday
+  ];
+  assert.deepStrictEqual(names(autoGroup(files)), [
+    ["call_part1.mp3"],
+    ["call_part2.mp3"],
+  ]);
+});
+
+test("part files written within one session group", () => {
+  const files = [
+    { name: "call_part1.mp3", lastModified: at("2026-10-19T09:30:00") },
+    { name: "call_part2.mp3", lastModified: at("2026-10-19T10:05:00") },
+  ];
+  assert.deepStrictEqual(names(autoGroup(files)), [
+    ["call_part1.mp3", "call_part2.mp3"],
+  ]);
+});
+
+test("part files without mtime are not auto-grouped", () => {
+  const files = [
+    { name: "call_part1.mp3" },
+    { name: "call_part2.mp3", lastModified: at("2026-10-19T10:05:00") },
+  ];
+  assert.deepStrictEqual(names(autoGroup(files)), [
+    ["call_part1.mp3"],
+    ["call_part2.mp3"],
+  ]);
+});
