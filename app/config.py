@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     max_audio_seconds: int = 6000
     # Max upload size in bytes (default 200 MB)
     max_upload_bytes: int = 200 * 1024 * 1024
+    # Max number of `file` parts in one request (default 50). Caps multipart
+    # parse amplification: the total body is already limited by max_upload_bytes,
+    # but without this a client could send thousands of tiny parts.
+    max_upload_parts: int = 50
     cors_origins: str = "*"
 
     # Append-only JSONL file for user feedback (mounted volume in Docker).
