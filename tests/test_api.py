@@ -142,6 +142,31 @@ def test_transcriptions_joins_multiple_parts(client: TestClient, monkeypatch) ->
     assert "2.0s" in r.json()["detail"]
 
 
+def test_transcriptions_multipart_rejects_before_decode(
+    client: TestClient, monkeypatch
+) -> None:
+    # Oversized multi-part uploads must 413 on the cheap per-part metadata
+    # duration, without ever decoding/concatenating the parts (CPU/DoS guard).
+    import app.api.transcriptions as tx
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "max_audio_seconds", 1.5)
+
+    def _boom(parts: list[bytes]) -> None:
+        raise AssertionError("concat_audio must not run for oversized input")
+
+    monkeypatch.setattr(tx, "concat_audio", _boom)
+    r = client.post(
+        "/v1/audio/transcriptions",
+        files=[
+            ("file", ("a.wav", _silence_wav(1.0), "audio/wav")),
+            ("file", ("b.wav", _silence_wav(1.0), "audio/wav")),
+        ],
+    )
+    assert r.status_code == 413
+    assert "2.0s" in r.json()["detail"]
+
+
 def test_feedback_roundtrip(client: TestClient, tmp_path, monkeypatch) -> None:
     from app.config import settings
 

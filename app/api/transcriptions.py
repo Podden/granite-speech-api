@@ -225,7 +225,19 @@ async def transcribe(
             audio_bytes = parts[0]
             duration = get_duration(audio_bytes)
         else:
+            # Reject oversized multi-part uploads on the cheap per-part metadata
+            # duration (sf.info) before concat_audio decodes+resamples every part.
+            # Otherwise a client can push 2+ parts just under the body cap and
+            # force a full decode on each request just to receive a 413 (CPU/DoS).
+            estimated = sum(get_duration(p) for p in parts)
+            if estimated > settings.max_audio_seconds:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Audio too long: {estimated:.1f}s > {settings.max_audio_seconds}s",
+                )
             audio_bytes, duration = await asyncio.to_thread(concat_audio, parts)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid audio: {exc}") from exc
 
