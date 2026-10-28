@@ -142,6 +142,23 @@ def test_transcriptions_joins_multiple_parts(client: TestClient, monkeypatch) ->
     assert "2.0s" in r.json()["detail"]
 
 
+def test_transcriptions_from_held_upload(client: TestClient, monkeypatch) -> None:
+    from app.api import uploads
+    from app.config import settings
+
+    # Same 413 probe as above: proves the held parts reached the duration check.
+    monkeypatch.setattr(settings, "max_audio_seconds", 1.5)
+    monkeypatch.setitem(
+        uploads._held, "abc", uploads.Held(parts=[_silence_wav(1.0), _silence_wav(1.0)], filename="a.wav")
+    )
+    r = client.post("/v1/audio/transcriptions", data={"upload_id": "abc"})
+    assert r.status_code == 413 and "2.0s" in r.json()["detail"]
+    assert "abc" in uploads._held  # stays held for a re-run with other options
+
+    r = client.post("/v1/audio/transcriptions", data={"upload_id": "gone"})
+    assert r.status_code == 404
+
+
 def test_feedback_roundtrip(client: TestClient, tmp_path, monkeypatch) -> None:
     from app.config import settings
 

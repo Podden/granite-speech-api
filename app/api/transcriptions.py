@@ -9,6 +9,7 @@ from fastapi import APIRouter, Form, HTTPException, UploadFile, File
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from app.aligner import aligner as forced_aligner
+from app.api.uploads import take
 from app.audio import concat_audio, get_duration
 from app.backends import registry
 from app.backends.catalog import is_granite, preset_aligner, resolve_model_id
@@ -68,15 +69,20 @@ TranslateTarget = Literal[
 )
 async def transcribe(
     file: Annotated[
-        list[UploadFile],
+        list[UploadFile] | None,
         File(
             description=(
                 "Audio (or video) file to transcribe: wav, mp3, ogg/opus, flac, m4a, mp4, …. "
                 "Repeat the field to send a recording split into several parts: they are "
-                "joined in the given order and transcribed as one audio."
+                "joined in the given order and transcribed as one audio. "
+                "Omit when sending `upload_id`."
             ),
         ),
-    ],
+    ] = None,
+    upload_id: Annotated[
+        str | None,
+        Form(description="Audio held by an open `POST /v1/uploads` request, instead of `file`."),
+    ] = None,
     model: Annotated[
         str | None,
         Form(
@@ -216,7 +222,12 @@ async def transcribe(
     Multipart form; everything except `file` is optional. Extras over OpenAI:
     speaker attribution, word timestamps, speech translation and NDJSON streaming.
     """
-    parts = [await f.read() for f in file]
+    if upload_id:
+        held = take(upload_id)
+        parts, filename = held.parts, held.filename
+    else:
+        parts = [await f.read() for f in file or []]
+        filename = file[0].filename if file else None
     if not parts or not all(parts):
         raise HTTPException(status_code=400, detail="Empty audio file")
 
@@ -245,7 +256,7 @@ async def transcribe(
 
     req = TranscriptionRequest(
         audio_bytes=audio_bytes,
-        filename=file[0].filename or "audio",
+        filename=filename or "audio",
         model=model or settings.default_model,
         language=language,
         response_format=response_format,

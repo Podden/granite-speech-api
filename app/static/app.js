@@ -39,6 +39,7 @@ const state = {
   file: null,          // original File (first part of a group)
   files: [],           // all parts of the current recording, in order
   uploads: null,       // [{blob, name}] — one prepared upload, or the original parts
+  held: null,          // early upload: {xhr, id, ready: Promise<id|null>, onProgress}
   playBlob: null,      // playback source (original file, or joined audio of a group)
   duration: null,      // seconds
   peaks: null,         // waveform peaks for drawing
@@ -185,6 +186,7 @@ async function prepareFiles(files) {
   }
   state.file = file;
   state.files = files;
+  dropHold();
   state.uploads = null;
   state.playBlob = null;
   state.duration = null;
@@ -196,7 +198,8 @@ async function prepareFiles(files) {
   els.dropzone.classList.add("has-file");
   const totalSize = files.reduce((n, f) => n + f.size, 0);
   els.fileName.textContent = files.length > 1 ? `${file.name} (${files.length} Teile)` : file.name;
-  els.fileInfo.textContent = `${fmtSize(totalSize)} — analysiere…`;
+  setPrep(`${fmtSize(totalSize)} — lese Datei…`, null);
+  let readyInfo = "";
   for (const f of files) {
     log(`Datei gewählt: ${f.name} (${fmtSize(f.size)}, ${f.type || "unbekannter Typ"})`);
   }
@@ -209,7 +212,10 @@ async function prepareFiles(files) {
     // ASR model expects, and it shrinks the upload.
     const monos = [];
     let sampleRate = 16000;
-    for (const f of files) {
+    for (const [i, f] of files.entries()) {
+      setPrep(`${fmtSize(totalSize)} — dekodiere Audio` +
+        (files.length > 1 ? ` (Teil ${i + 1}/${files.length})` : "") + "…",
+        files.length > 1 ? (i / files.length) * 100 : null);
       const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
       const audio = await ctx.decodeAudioData(await f.arrayBuffer());
       ctx.close();
@@ -230,7 +236,9 @@ async function prepareFiles(files) {
     let upload = { blob: wav, name: base + ".wav", label: "16 kHz mono WAV" };
     if (await oggOpusSupported(sampleRate)) {
       try {
-        const ogg = await encodeOggOpus(mono, sampleRate);
+        const ogg = await encodeOggOpus(mono, sampleRate, (f) => {
+          if (token === prepareToken) setPrep(`${fmtDuration(state.duration)} — komprimiere zu Opus ${Math.round(f * 100)} %`, f * 100);
+        });
         if (ogg.size < upload.blob.size) {
           upload = { blob: ogg, name: base + ".ogg", label: "Opus 48 kbit/s" };
         }
@@ -249,9 +257,10 @@ async function prepareFiles(files) {
         (files.length > 1 ? ` aus ${files.length} Teilen` : "") +
         `, Upload als ${upload.label} (${fmtSize(upload.blob.size)} statt ${fmtSize(totalSize)} — ` +
         `${Math.max(0, 100 - (upload.blob.size / totalSize) * 100).toFixed(0)} % gespart)`);
-    els.fileInfo.textContent =
+    readyInfo =
       `${fmtDuration(state.duration)} · Upload: ${fmtSize(upload.blob.size)} (${upload.label})` +
       (isVideo ? ` · Tonspur aus ${fmtSize(totalSize)} Video` : "");
+    setPrep(readyInfo, null);
   } catch (err) {
     if (token !== prepareToken) return false;
     // Server joins the original parts itself (repeated `file` fields).
@@ -260,7 +269,8 @@ async function prepareFiles(files) {
     state.playBlob = files.length === 1 ? file : null;
     state.peaks = null;
     drawWaveform(0);
-    els.fileInfo.textContent = `${fmtSize(totalSize)} · Dauer unbekannt (Server prüft)`;
+    readyInfo = `${fmtSize(totalSize)} · Dauer unbekannt (Server prüft)`;
+    setPrep(readyInfo, null);
   }
 
   setupPlayer();
@@ -272,8 +282,70 @@ async function prepareFiles(files) {
     );
     return true;
   }
+  startHold(readyInfo);
   els.btnStart.disabled = false;
   return true;
+}
+
+/* ── Früher Upload ──────────────────────────────────────────
+   Gleich nach der Vorbereitung geht das Audio an POST /v1/uploads. Der Server
+   hält es nur im RAM, solange diese Verbindung offen ist (Tab zu / andere
+   Datei = verworfen); „Transkription starten“ schickt dann nur upload_id und
+   Optionen. Schlägt das fehl, lädt der Start wie bisher direkt hoch. */
+
+const prepTrack = $("#prep-track");
+const prepFill = $("#prep-fill");
+
+function setPrep(text, pct) {
+  els.fileInfo.textContent = text;
+  prepTrack.hidden = pct == null;
+  if (pct != null) prepFill.style.width = `${Math.min(100, pct)}%`;
+}
+
+function dropHold() {
+  const h = state.held;
+  state.held = null;
+  if (h) h.xhr.abort();
+}
+
+function startHold(readyInfo) {
+  dropHold();
+  const fd = new FormData();
+  for (const u of state.uploads) fd.append("file", u.blob, u.name);
+  const xhr = new XMLHttpRequest();
+  const h = { xhr, id: null, onProgress: null };
+  h.ready = new Promise((resolve) => { h.resolve = resolve; });
+  state.held = h;
+
+  xhr.upload.onprogress = (e) => {
+    if (state.held !== h || !e.lengthComputable) return;
+    const pct = (e.loaded / e.total) * 100;
+    setPrep(`${readyInfo} · Upload ${Math.round(pct)} % (${fmtSize(e.loaded)} / ${fmtSize(e.total)})`, pct);
+    h.onProgress?.(e);
+  };
+  xhr.onreadystatechange = () => {
+    if (xhr.readyState >= 3 && xhr.status === 200 && !h.id) {
+      const m = xhr.responseText.match(/"upload_id":\s*"([^"]+)"/);
+      if (m) {
+        h.id = m[1];
+        h.resolve(h.id);
+        if (state.held === h) setPrep(`${readyInfo} · liegt auf dem Server bereit`, null);
+        log("Vorab-Upload fertig — der Server hält das Audio nur im Speicher, solange die Seite offen ist.");
+      }
+    }
+    if (xhr.readyState !== 4) return;
+    h.resolve(null); // no-op once the id arrived
+    if (state.held !== h) return; // dropped on purpose
+    state.held = null;
+    if (h.id) {
+      log("Server hat den Vorab-Upload verworfen (lange ungenutzt) — der Start lädt neu hoch.");
+    } else {
+      log(`Vorab-Upload fehlgeschlagen (HTTP ${xhr.status}) — der Start lädt direkt hoch.`, "warn");
+      setPrep(readyInfo, null);
+    }
+  };
+  xhr.open("POST", "/v1/uploads");
+  xhr.send(fd);
 }
 
 function concatSamples(arrays) {
@@ -709,9 +781,10 @@ function stopQueuePolling() {
 
 /* ── Transcription ──────────────────────────────────────── */
 
-function buildFormData() {
+function buildFormData(uploadId) {
   const fd = new FormData();
-  for (const u of state.uploads) fd.append("file", u.blob, u.name);
+  if (uploadId) fd.append("upload_id", uploadId);
+  else for (const u of state.uploads) fd.append("file", u.blob, u.name);
   fd.append("stream", "true");
   appendOptions(fd);
   return fd;
@@ -766,11 +839,11 @@ function startTranscription() {
 function transcribeCurrent() {
   return new Promise((resolve, reject) => {
     state.finishCb = { resolve, reject };
-    beginTranscription();
+    beginTranscription().catch((e) => fail(e.message));
   });
 }
 
-function beginTranscription() {
+async function beginTranscription() {
   if (!state.uploads) return;
   resetResult();
   els.cardStatus.hidden = false;
@@ -786,9 +859,35 @@ function beginTranscription() {
   state.words = [];
   state.resultText = "";
 
-  const fd = buildFormData();
-  const upSize = state.uploads.reduce((n, u) => n + u.blob.size, 0);
-  log(`Starte Upload: ${state.uploads.map((u) => u.name).join(" + ")} (${fmtSize(upSize)})`);
+  const h = state.held;
+  let uploadId = h?.id || null;
+  if (h && !uploadId) {
+    // Vorab-Upload läuft noch: dessen Fortschritt hier zeigen und abwarten.
+    const finish = state.finishCb;
+    const uploads = state.uploads;
+    h.onProgress = (e) => {
+      setProgress((e.loaded / e.total) * 99.9, false);
+      els.statusDetail.textContent = `${fmtSize(e.loaded)} / ${fmtSize(e.total)}`;
+    };
+    uploadId = await h.ready;
+    h.onProgress = null;
+    // Abgebrochen oder andere Datei gewählt, während der Upload lief.
+    if (state.finishCb !== finish || state.uploads !== uploads) return;
+  }
+  sendTranscription(uploadId);
+}
+
+function sendTranscription(uploadId) {
+  const fd = buildFormData(uploadId);
+  if (uploadId) {
+    log("Starte Transkription — Audio liegt schon auf dem Server.");
+    setPhase("transcribe", "Warte auf Server…", "");
+    setProgress(0, true);
+    startQueuePolling();
+  } else {
+    const upSize = state.uploads.reduce((n, u) => n + u.blob.size, 0);
+    log(`Starte Upload: ${state.uploads.map((u) => u.name).join(" + ")} (${fmtSize(upSize)})`);
+  }
   const fields = [];
   for (const [k, v] of fd.entries()) {
     fields.push(`${k}=${v instanceof Blob ? `<blob ${v.size} B, ${v.type || "?"}>` : v}`);
@@ -800,7 +899,7 @@ function beginTranscription() {
   let parsedTo = 0;
 
   xhr.upload.onprogress = (e) => {
-    if (!e.lengthComputable) return;
+    if (uploadId || !e.lengthComputable) return;
     const pct = (e.loaded / e.total) * 100;
     setProgress(pct * 0.999, false);
     els.statusDetail.textContent = `${fmtSize(e.loaded)} / ${fmtSize(e.total)}`;
@@ -823,7 +922,7 @@ function beginTranscription() {
         }
       }
     }
-    if (xhr.readyState === 4) onRequestDone(xhr);
+    if (xhr.readyState === 4) onRequestDone(xhr, uploadId);
   };
 
   xhr.onerror = () => {
@@ -925,12 +1024,21 @@ function handleEvent(line) {
   }
 }
 
-function onRequestDone(xhr) {
+function onRequestDone(xhr, uploadId) {
   state.xhr = null;
   stopQueuePolling();
   flushDeltaLog();
   logRaw("HTTP", `${xhr.status} ${xhr.statusText || ""} · ${xhr.responseText.length} B NDJSON`,
     xhr.status === 200 ? undefined : "err");
+  if (xhr.status === 404 && uploadId) {
+    // Server kennt den Vorab-Upload nicht mehr (Neustart, abgelaufen) → direkt hochladen.
+    log("Vorab-Upload nicht mehr auf dem Server — lade direkt hoch.", "warn");
+    dropHold();
+    setPhase("upload", "Datei wird hochgeladen…");
+    setProgress(0, false);
+    sendTranscription(null);
+    return;
+  }
   if (xhr.status !== 200) {
     let msg = `HTTP ${xhr.status}`;
     try { msg = JSON.parse(xhr.responseText).detail || msg; } catch { /* keep */ }
@@ -1521,8 +1629,10 @@ document.addEventListener("change", (e) => {
   const el = e.target;
   if (!el.id && !el.name) return;
   if (el.id === "fb-comment") return; // Kommentartext nicht in den Trace
+  // Freitext (Keywords, System-Prompt) kann Namen enthalten → nur "geändert".
   const val = el.type === "checkbox" ? el.checked
     : el.type === "file" ? "(Datei gewählt)"
+    : el.type === "text" || el.tagName === "TEXTAREA" ? "(geändert)"
     : String(el.value).slice(0, 60);
   traceEvent("change", `${el.id || el.name}=${val}`);
 }, true);
@@ -1598,6 +1708,7 @@ function clearPrepared() {
   btnPlayTr.disabled = true;
   state.file = null;
   state.files = [];
+  dropHold();
   state.uploads = null;
   state.playBlob = null;
   state.peaks = null;

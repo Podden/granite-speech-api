@@ -94,8 +94,9 @@ async function oggOpusSupported(sampleRate) {
   }
 }
 
-/* samples: Float32Array (mono), sampleRate: e.g. 16000. Returns Blob (audio/ogg). */
-async function encodeOggOpus(samples, sampleRate) {
+/* samples: Float32Array (mono), sampleRate: e.g. 16000. Returns Blob (audio/ogg).
+   onProgress(fraction 0..1) is called while encoding. */
+async function encodeOggOpus(samples, sampleRate, onProgress) {
   const packets = [];   // { data: Uint8Array, durationUs: number }
   let opusHead = null;
   let encodeError = null;
@@ -125,8 +126,14 @@ async function encodeOggOpus(samples, sampleRate) {
       timestamp: Math.round(pos / sampleRate * 1e6),
       data: slice,
     }));
+    // Every ~10 s of audio: let the encoder drain and the UI repaint.
+    if ((pos / FRAME) % 500 === 499) {
+      onProgress?.(pos / samples.length);
+      await new Promise((r) => setTimeout(r, 0));
+    }
   }
   await encoder.flush();
+  onProgress?.(1);
   encoder.close();
   if (encodeError) throw encodeError;
   if (!packets.length) throw new Error("Opus-Encoder lieferte keine Daten");
