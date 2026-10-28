@@ -8,8 +8,10 @@ Decoding chain:
 from __future__ import annotations
 
 import io
+import logging
 import os
 import shutil
+import subprocess
 import tempfile
 
 import numpy as np
@@ -17,8 +19,44 @@ import soundfile as sf
 import torch
 import torchaudio
 
+from app.config import settings
+
+log = logging.getLogger(__name__)
 
 TARGET_SR = 16_000
+
+# 500 ms frames, gain smoothed over 31 frames (~15 s), at most 10x (+20 dB) so
+# room noise in long pauses is not blown up to speech level.
+_DYNAUDNORM = "dynaudnorm=f=500:g=31:m=10:p=0.95"
+
+
+def normalize_loudness(wav: torch.Tensor) -> torch.Tensor:
+    """Dynamic loudness normalization of a mono 16 kHz [1, n] float tensor.
+
+    Returns the input unchanged (with a warning) when ffmpeg fails, so a
+    missing/broken ffmpeg degrades quality instead of failing the request.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-f", "f32le", "-ar", str(TARGET_SR), "-ac", "1", "-i", "pipe:0",
+                "-af", _DYNAUDNORM,
+                "-f", "f32le", "-ar", str(TARGET_SR), "-ac", "1", "pipe:1",
+            ],
+            input=wav[0].contiguous().numpy().astype(np.float32).tobytes(),
+            capture_output=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        log.warning("loudness normalization skipped: %s", exc)
+        return wav
+    out = torch.from_numpy(np.frombuffer(proc.stdout, dtype=np.float32).copy())
+    n = wav.shape[-1]
+    # dynaudnorm keeps the length; pad/trim guards timestamps against an off-by-a-few.
+    if out.shape[0] < n:
+        out = torch.nn.functional.pad(out, (0, n - out.shape[0]))
+    return out[:n].unsqueeze(0)
 
 
 def _try_audioread(data: bytes) -> tuple[np.ndarray, int]:
@@ -52,11 +90,12 @@ def _try_audioread(data: bytes) -> tuple[np.ndarray, int]:
             pass
 
 
-def load_audio_bytes(data: bytes) -> tuple[torch.Tensor, float]:
+def load_audio_bytes(data: bytes, normalize: bool | None = None) -> tuple[torch.Tensor, float]:
     """Decode `data` to a mono 16 kHz float32 tensor of shape [1, num_samples].
 
     Falls back from libsndfile to audioread+ffmpeg for formats libsndfile
-    cannot read (e.g. AAC inside .m4a containers).
+    cannot read (e.g. AAC inside .m4a containers). `normalize` (default
+    ``settings.normalize_audio``) applies `normalize_loudness`.
     """
     wav_np: np.ndarray | None = None
     sr = 0
@@ -83,6 +122,9 @@ def load_audio_bytes(data: bytes) -> tuple[torch.Tensor, float]:
     if sr != TARGET_SR:
         wav = torchaudio.functional.resample(wav, sr, TARGET_SR)
 
+    if settings.normalize_audio if normalize is None else normalize:
+        wav = normalize_loudness(wav)
+
     duration = wav.shape[-1] / TARGET_SR
     return wav, float(duration)
 
@@ -104,7 +146,8 @@ def concat_audio(parts: list[bytes]) -> tuple[bytes, float]:
     meeting): the pipeline then sees one continuous audio, so timestamps run
     through and diarization keeps speaker labels consistent across parts.
     """
-    wavs = [load_audio_bytes(p)[0] for p in parts]
+    # Not normalized here: every consumer re-decodes (and normalizes) the joined WAV.
+    wavs = [load_audio_bytes(p, normalize=False)[0] for p in parts]
     wav = torch.cat(wavs, dim=-1)
     buf = io.BytesIO()
     sf.write(buf, wav[0].numpy(), TARGET_SR, format="WAV", subtype="PCM_16")

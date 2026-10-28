@@ -19,6 +19,7 @@ from app.backends.granite_nar import GRANITE_NAR_ID, GraniteNARBackend
 from app.backends.qwen_asr import QwenASRBackend
 from app.backends.turboctc import GRANITE_TURBOCTC, TurboCTCBackend
 from app.config import settings
+from app.lazy import model_load
 from app import vram
 
 log = logging.getLogger(__name__)
@@ -81,7 +82,8 @@ class BackendRegistry:
         if self._backend.model_id != target:
             await vram.reserve("asr", vram.asr_mb(target))
             try:
-                await self._backend.load(target, settings.resolved_device())
+                async with model_load():
+                    await self._backend.load(target, settings.resolved_device())
             except BaseException:
                 await vram.drop("asr")
                 raise

@@ -10,7 +10,8 @@ import asyncio
 import gc
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from typing import Any, TypeVar
 
 from app import vram
@@ -19,6 +20,28 @@ from app.config import settings
 log = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+_LOAD_LOCK = asyncio.Lock()
+
+
+@asynccontextmanager
+async def model_load() -> AsyncIterator[None]:
+    """Serialize model loads across all stages and the ASR registry.
+
+    ``from_pretrained(dtype=...)`` flips torch's process-global default dtype
+    and restores it afterwards. Two loads interleaving in executor threads left
+    it stuck at bfloat16, so every later model came up with bf16 weights / mel
+    buffers and failed on float32 audio ("float != c10::BFloat16").
+    ponytail: inference running *during* a load still sees the temporary
+    default; fine as long as inference only creates tensors with explicit dtypes.
+    """
+    async with _LOAD_LOCK:
+        try:
+            yield
+        finally:
+            import torch
+
+            torch.set_default_dtype(torch.float32)
 
 
 def free_gpu_memory() -> None:
@@ -69,7 +92,8 @@ class LazyModel:
                 log.info("Loading %s", self.name)
                 await vram.reserve(self.name, self.vram_mb)
                 try:
-                    self._model = await loop.run_in_executor(None, self._load)
+                    async with model_load():
+                        self._model = await loop.run_in_executor(None, self._load)
                 except BaseException:
                     await vram.drop(self.name)
                     raise

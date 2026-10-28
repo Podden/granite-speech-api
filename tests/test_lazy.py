@@ -28,3 +28,23 @@ async def test_unload_collects_cyclic_model() -> None:
         assert ref() is None
     finally:
         gc.enable()
+
+
+class _LeakyStage(LazyModel):
+    """Simulates two interleaved from_pretrained() calls leaving bf16 as default."""
+
+    def _load(self) -> object:
+        import torch
+
+        torch.set_default_dtype(torch.bfloat16)
+        return object()
+
+
+async def test_load_resets_leaked_default_dtype() -> None:
+    import torch
+
+    try:
+        await _LeakyStage().warm()
+        assert torch.get_default_dtype() == torch.float32
+    finally:
+        torch.set_default_dtype(torch.float32)
