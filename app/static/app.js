@@ -207,12 +207,14 @@ async function prepareFiles(files) {
   const isVideo = files.some((f) =>
     /^video\//.test(f.type) || /\.(mp4|mkv|mov|webm|avi|m4v)$/i.test(f.name));
 
+  let current = file; // the part being decoded, named in the error
   try {
     // Decoding into a 16 kHz context resamples for free — exactly what the
     // ASR model expects, and it shrinks the upload.
     const monos = [];
     let sampleRate = 16000;
     for (const [i, f] of files.entries()) {
+      current = f;
       setPrep(`${fmtSize(totalSize)} — dekodiere Audio` +
         (files.length > 1 ? ` (Teil ${i + 1}/${files.length})` : "") + "…",
         files.length > 1 ? (i / files.length) * 100 : null);
@@ -263,6 +265,22 @@ async function prepareFiles(files) {
     setPrep(readyInfo, null);
   } catch (err) {
     if (token !== prepareToken) return false;
+    if (isVideo) {
+      // Never upload a video as a whole — only its audio goes to the server.
+      const broken = await mp4LacksIndex(current);
+      if (token !== prepareToken) return false;
+      state.peaks = null;
+      drawWaveform(0);
+      setPrep(`${fmtSize(totalSize)} · Tonspur nicht lesbar`, null);
+      showFileError(broken
+        ? `„${current.name}“ ist unvollständig: Der MP4-Index (moov) fehlt — typisch für eine ` +
+          `OBS-Aufnahme, die nicht sauber beendet wurde. Weder Browser noch Server können daraus ` +
+          `Ton lesen. Reparatur z. B. mit untrunc und einer intakten Aufnahme gleicher Einstellungen als Referenz.`
+        : `Der Browser kann die Tonspur von „${current.name}“ nicht lesen (${err.message || err.name}). ` +
+          `Videos werden nicht als Ganzes hochgeladen — bitte die Tonspur vorher extrahieren, ` +
+          `z. B. ffmpeg -i video.mp4 -vn -c:a copy ton.m4a`);
+      return true;
+    }
     // Server joins the original parts itself (repeated `file` fields).
     log(`Browser-Dekodierung fehlgeschlagen (${err.message || err.name}) — Original wird hochgeladen, der Server extrahiert die Tonspur.`, "warn");
     state.uploads = files.map((f) => ({ blob: f, name: f.name }));
@@ -339,6 +357,14 @@ function startHold(readyInfo) {
     state.held = null;
     if (h.id) {
       log("Server hat den Vorab-Upload verworfen (lange ungenutzt) — der Start lädt neu hoch.");
+    } else if (xhr.status >= 400 && xhr.status < 500) {
+      // Same body, same answer: the start would only upload it a second time.
+      h.error = `HTTP ${xhr.status}`;
+      try { h.error = JSON.parse(xhr.responseText).detail || h.error; } catch { /* keep */ }
+      state.uploads = null;
+      setPrep(readyInfo, null);
+      // A start waiting on this upload (onProgress set) reports it via fail().
+      if (!h.onProgress) showFileError(`Server lehnt die Datei ab: ${h.error}`);
     } else {
       log(`Vorab-Upload fehlgeschlagen (HTTP ${xhr.status}) — der Start lädt direkt hoch.`, "warn");
       setPrep(readyInfo, null);
@@ -353,6 +379,25 @@ function concatSamples(arrays) {
   let off = 0;
   for (const a of arrays) { out.set(a, off); off += a.length; }
   return out;
+}
+
+/* True if an MP4/MOV has no top-level moov box. The recorder writes this
+   sample index last, so after a crash the media is in mdat but nothing can
+   locate it. Reads only the box headers, never the whole file. */
+async function mp4LacksIndex(file) {
+  let off = 0;
+  let first = null;
+  while (off + 8 <= file.size) {
+    const v = new DataView(await file.slice(off, off + 16).arrayBuffer());
+    const type = String.fromCharCode(v.getUint8(4), v.getUint8(5), v.getUint8(6), v.getUint8(7));
+    first ??= type;
+    if (first !== "ftyp" || type === "moov") return false;
+    let size = v.getUint32(0);
+    if (size === 1 && v.byteLength === 16) size = Number(v.getBigUint64(8));
+    if (size < 8) break; // 0 = box runs to EOF (unfinished mdat), else garbage
+    off += size;
+  }
+  return first === "ftyp";
 }
 
 function showFileError(msg) {
@@ -871,6 +916,7 @@ async function beginTranscription() {
     };
     uploadId = await h.ready;
     h.onProgress = null;
+    if (h.error) { fail(`Server lehnt die Datei ab: ${h.error}`); return; }
     // Abgebrochen oder andere Datei gewählt, während der Upload lief.
     if (state.finishCb !== finish || state.uploads !== uploads) return;
   }
@@ -1084,8 +1130,7 @@ function fail(msg) {
   els.statusDetail.textContent = "";
   els.btnStart.disabled = false;
   els.btnCancel.hidden = true;
-  log(msg, "err");
-  showFileError(msg);
+  showFileError(msg); // also logs it
   state.finishCb?.reject(new Error(msg));
   state.finishCb = null;
 }

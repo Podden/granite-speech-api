@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
@@ -66,8 +66,8 @@ class ContentSizeLimitMiddleware(BaseHTTPMiddleware):
         if request.method in ("POST", "PUT", "PATCH"):
             content_length = request.headers.get("content-length")
             if content_length and int(content_length) > settings.max_upload_bytes:
-                return Response(
-                    content=f"Request body too large (max {settings.max_upload_bytes} bytes)",
+                return JSONResponse(
+                    {"detail": f"Request body too large (max {settings.max_upload_bytes // 2**20} MB)"},
                     status_code=413,
                 )
         return await call_next(request)
